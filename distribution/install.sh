@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_NAME="${AGENT_NAME:-papersmith}"
+PREFIX="${PREFIX:-$HOME/.local}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
+CODEX_VERSION="${CODEX_VERSION:-latest}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
+AGENT_BACKENDS="${AGENT_BACKENDS:-opencode}"
+RELEASE_URL="${RELEASE_URL:-${AGENT_RELEASE_URL:-__RELEASE_URL__}}"
+
+[[ "$AGENT_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || {
+  echo "invalid agent name: $AGENT_NAME" >&2
+  exit 2
+}
+
+[[ "$AGENT_BACKENDS" =~ ^(opencode|codex|claude|claude-code)(,(opencode|codex|claude|claude-code))*$ ]] || {
+  echo "invalid AGENT_BACKENDS: $AGENT_BACKENDS" >&2
+  exit 2
+}
+
+script_path="${BASH_SOURCE[0]:-}"
+script_dir=""
+if [[ -n "$script_path" && -f "$script_path" ]]; then
+  script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+fi
+
+source_runtime=""
+release_root=""
+if [[ -n "$script_dir" && -d "$script_dir/../src/$AGENT_NAME/runtime" ]]; then
+  source_runtime="$(cd "$script_dir/../src/$AGENT_NAME/runtime" && pwd)"
+elif [[ -n "$script_dir" && -d "$script_dir/agent-definition" ]]; then
+  release_root="$script_dir"
+fi
+
+# A downloaded installer is intentionally only a bootstrapper. It fetches a
+# release archive and then re-enters the archive's self-contained installer;
+# it never needs access to the development repository.
+if [[ -z "$source_runtime" && -z "$release_root" ]]; then
+  if [[ "$RELEASE_URL" == __RELEASE_URL__ || -z "$RELEASE_URL" ]]; then
+    cat >&2 <<'EOF'
+This installer is a source checkout or release bootstrapper.
+Set RELEASE_URL to a published Agent release archive when piping install.sh
+from the network, for example:
+  RELEASE_URL=https://example.invalid/releases/papersmith-0.1.0.tar.gz bash install.sh
+EOF
+    exit 2
+  fi
+  command -v curl >/dev/null 2>&1 || { echo "curl is required to download the Agent release" >&2; exit 2; }
+  download_dir="$(mktemp -d)"
+  trap 'rm -rf "$download_dir"' EXIT
+  curl --fail --silent --show-error --location "$RELEASE_URL" -o "$download_dir/release.tar.gz"
+  tar --extract --gzip --no-same-owner -f "$download_dir/release.tar.gz" -C "$download_dir"
+  release_install="$(find "$download_dir" -mindepth 2 -maxdepth 3 -type f -name install.sh -print -quit)"
+  [[ -n "$release_install" ]] || { echo "release archive does not contain install.sh" >&2; exit 2; }
+  AGENT_NAME="$AGENT_NAME" PREFIX="$PREFIX" AGENT_BACKENDS="$AGENT_BACKENDS" \
+    OPENCODE_VERSION="$OPENCODE_VERSION" CODEX_VERSION="$CODEX_VERSION" \
+    CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" \
+    "$release_install"
+  exit 0
+fi
+
+mkdir -p "$PREFIX/lib/$AGENT_NAME" "$PREFIX/bin"
+definition_dir="$PREFIX/lib/$AGENT_NAME/agent-definition"
+mkdir -p "$definition_dir"
+if [[ -n "$source_runtime" ]]; then
+  tar -C "$source_runtime" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$definition_dir" -xf -
+  launcher_source="$script_dir/launcher"
+  version="dev"
+else
+  tar -C "$release_root/agent-definition" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$definition_dir" -xf -
+  launcher_source="$release_root/launcher"
+  version="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$release_root/release-manifest.json" | head -n 1)"
+  version="${version:-unknown}"
+fi
+
+tools_dir="$definition_dir/tools"
+if [[ -f "$tools_dir/pyproject.toml" ]]; then
+  command -v uv >/dev/null 2>&1 || {
+    echo "uv is required to install the Agent runtime tools" >&2
+    exit 2
+  }
+  runtime_env_dir="$PREFIX/lib/$AGENT_NAME/environment"
+  uv venv "$runtime_env_dir" --python python3 >/dev/null
+  uv pip install --python "$runtime_env_dir/bin/python" "$tools_dir" >/dev/null
+fi
+
+sed -e "s/__AGENT_NAME__/$AGENT_NAME/g" "$launcher_source" > "$PREFIX/bin/$AGENT_NAME"
+chmod +x "$PREFIX/bin/$AGENT_NAME"
+printf '{"agent":"%s","version":"%s","provider":"runtime-injected","backends":"%s"}\n' \
+  "$AGENT_NAME" "$version" "$AGENT_BACKENDS" > "$PREFIX/lib/$AGENT_NAME/release-manifest.json"
+
+# Docker builds install the selected runtimes in the final image. A release
+# installation uses npm only when the user has no existing backend binary;
+# this keeps each coding agent hidden behind the product command without
+# requiring a separate manual runtime installation step.
+if [[ -z "${SKIP_RUNTIME_INSTALL:-}" && -z "${SKIP_OPENCODE_INSTALL:-}" ]]; then
+  command -v npm >/dev/null 2>&1 || {
+    echo "Node.js/npm is required to install requested Agent runtimes" >&2
+    exit 2
+  }
+  IFS=',' read -r -a requested_backends <<< "$AGENT_BACKENDS"
+  for requested_backend in "${requested_backends[@]}"; do
+    case "$requested_backend" in
+      opencode)
+        runtime_binary=opencode
+        runtime_package="opencode-ai@$OPENCODE_VERSION"
+        ;;
+      codex)
+        runtime_binary=codex
+        runtime_package="@openai/codex@$CODEX_VERSION"
+        ;;
+      claude|claude-code)
+        requested_backend=claude
+        runtime_binary=claude
+        runtime_package="@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+        ;;
+      '')
+        continue
+        ;;
+      *)
+        echo "unsupported Agent runtime backend: $requested_backend" >&2
+        exit 2
+        ;;
+    esac
+    if ! command -v "$runtime_binary" >/dev/null 2>&1; then
+      npm install --prefix "$PREFIX/lib/$AGENT_NAME/runtimes/$requested_backend" "$runtime_package" \
+        --no-audit --no-fund >/dev/null
+    fi
+  done
+fi

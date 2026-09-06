@@ -1,0 +1,15 @@
+name: Validate template
+on: [push, pull_request]
+jobs:
+  definition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
+      - run: ./scripts/validate-definition.sh papersmith
+      - run: docker build --build-arg AGENT_NAME=papersmith -t agent-template:test -f docker/Dockerfile .
+      - run: >-
+          docker run --rm --entrypoint bash agent-template:test -c
+          'command -v opencode && command -v codex && command -v claude &&
+          command -v papersmith-tool && papersmith-tool --check | grep -Fx PAPERSMITH_TOOL_OK'
