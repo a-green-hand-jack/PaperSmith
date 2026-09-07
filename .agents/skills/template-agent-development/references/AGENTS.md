@@ -1,4 +1,4 @@
-# Template Skill References
+# PaperSmith Template-Sync Reference
 
-These files are development-only sub-skill instructions. Read only the
-reference selected by the parent `template-agent-development` skill.
+This directory contains the selective-sync procedure for the development coding
+agent. It is not product runtime content.

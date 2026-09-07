@@ -1,4 +1,5 @@
 # PaperSmith Development Memory
 
-Store reviewed, PaperSmith-specific development decisions and evidence here.
-Do not store credentials, raw provider sessions, or private user data.
+This directory retains reviewed PaperSmith-specific decisions. Validation
+evidence names a backend/provider/model and result but never includes raw model
+output or credential material.

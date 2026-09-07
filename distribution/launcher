@@ -15,7 +15,7 @@ if [[ -d "$agent_environment_dir/bin" ]]; then
 fi
 
 backend="${AGENT_BACKEND:-${PAPERSMITH_BACKEND:-opencode}}"
-provider="${LLM_PROVIDER:-openai}"
+provider="${LLM_PROVIDER:-}"
 model="${LLM_MODEL:-}"
 variant="${LLM_VARIANT:-}"
 mode="run"
@@ -70,6 +70,11 @@ case "$backend" in
   claude-code) backend="claude" ;;
 esac
 
+if [[ "$backend" == opencode && -z "$provider" && "$model" == */* ]]; then
+  provider="${model%%/*}"
+  model="${model#*/}"
+fi
+
 runtime_bin() {
   local name="$1"
   local bundled="$bin_dir/../lib/__AGENT_NAME__/runtimes/$name/node_modules/.bin/$name"
@@ -87,6 +92,7 @@ claude_bin="$(runtime_bin claude)"
 require_backend() {
   case "$backend" in
     opencode)
+      [[ -n "$provider" ]] || { echo "LLM_PROVIDER or --provider is required for OpenCode" >&2; exit 2; }
       key_variable="$(printf '%s' "$provider" | tr '[:lower:]-.' '[:upper:]__')_API_KEY"
       if [[ -z "${!key_variable:-}" && "${AGENT_AUTH_STORE:-}" != 1 ]]; then
         echo "$key_variable is required (or provide an explicit runtime auth store)" >&2
@@ -141,13 +147,15 @@ require_backend
 
 case "$backend" in
   opencode)
-    [[ -n "$model" ]] || model="gpt-5.6"
-    if [[ "$model" == */* ]]; then
+    if [[ -z "$model" ]]; then
+      model_args=()
+    elif [[ "$model" == */* ]]; then
       model_ref="$model"
+      model_args=(--model "$model_ref")
     else
       model_ref="$provider/$model"
+      model_args=(--model "$model_ref")
     fi
-    model_args=(--model "$model_ref")
     [[ -n "$variant" ]] && model_args+=(--variant "$variant")
     if [[ "$mode" == tui || ${#passthrough[@]} -eq 0 ]]; then
       exec "$opencode_bin" "${model_args[@]}" "${passthrough[@]}"
@@ -157,7 +165,7 @@ case "$backend" in
     exec "$opencode_bin" run "${model_args[@]}" "${format_args[@]}" "${passthrough[@]}"
     ;;
   codex)
-    [[ -n "$backend_model" ]] || backend_model="${CODEX_MODEL:-gpt-5.5}"
+    [[ -n "$backend_model" ]] || backend_model="${CODEX_MODEL:-}"
     codex_sandbox="${CODEX_SANDBOX_MODE:-workspace-write}"
     case "$codex_sandbox" in
       read-only|workspace-write|danger-full-access) ;;
@@ -181,7 +189,7 @@ ${passthrough[*]}"
     exec "$codex_bin" "${codex_args[@]}"
     ;;
   claude)
-    [[ -n "$backend_model" ]] || backend_model="${CLAUDE_MODEL:-sonnet}"
+    [[ -n "$backend_model" ]] || backend_model="${CLAUDE_MODEL:-}"
     model_args=()
     [[ -n "$backend_model" ]] && model_args+=(--model "$backend_model")
     runtime_instructions="$(runtime_context)"

@@ -1,4 +1,5 @@
-# Development Knowledge Instructions
+# PaperSmith Development Knowledge
 
-Keep knowledge reusable and development-focused. Do not place product runtime
-behavior or credentials here.
+Keep reusable PaperSmith development knowledge here. Product behavior belongs
+under `src/papersmith/runtime/`; never store credentials, user manuscripts, or
+raw provider output in this directory.

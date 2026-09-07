@@ -8,8 +8,8 @@ metadata:
 # Agent Definition Validation
 
 Use after changing `src/<agent_name>/` or before releasing that Agent. Resolve
-the actual Agent name and current repository commands first; do not hardcode
-the template's `hewo` example in a downstream repository.
+the actual Agent name and current repository commands first; use PaperSmith's
+current helper and never assume another repository's example scaffold.
 
 ## Validation levels
 
@@ -28,7 +28,7 @@ the template's `hewo` example in a downstream repository.
    ```
 
 3. Before claiming Agent behavior, run a real request through
-   `docker/run-hewo-e2e.sh` or the downstream repository's renamed equivalent.
+   `docker/run-papersmith-e2e.sh`.
    Inject only the selected backend's credential through an explicit runtime
    environment variable or read-only auth/key mount. Observe the model response
    and inspect any requested workspace artifact.

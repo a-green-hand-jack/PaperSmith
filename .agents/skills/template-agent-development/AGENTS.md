@@ -1,4 +1,4 @@
-# Template Agent Development Skill
+# PaperSmith Template Synchronization
 
-Development-only instructions for maintaining the reusable template workflow.
-This directory is never copied into a product runtime or release payload.
+This development-only skill governs selective upstream synchronization. It is
+never copied into a product runtime, Docker image, or release payload.

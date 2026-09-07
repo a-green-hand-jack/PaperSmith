@@ -1,4 +1,5 @@
-# Development Workflow Instructions
+# PaperSmith Development Workflows
 
-Keep workflows for the development coding agent. Product workflows belong in
-the PaperSmith runtime definition.
+Keep repository-maintenance workflows here. Product manuscript workflows belong
+under `src/papersmith/runtime/workflows/`; do not place credentials or runtime
+provider state in either location.

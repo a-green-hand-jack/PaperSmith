@@ -6,7 +6,7 @@ PREFIX="${PREFIX:-$HOME/.local}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 CODEX_VERSION="${CODEX_VERSION:-latest}"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
-AGENT_BACKENDS="${AGENT_BACKENDS:-opencode}"
+AGENT_BACKENDS="${AGENT_BACKENDS:-opencode,codex,claude}"
 RELEASE_URL="${RELEASE_URL:-${AGENT_RELEASE_URL:-__RELEASE_URL__}}"
 
 [[ "$AGENT_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || {
@@ -62,17 +62,25 @@ fi
 
 mkdir -p "$PREFIX/lib/$AGENT_NAME" "$PREFIX/bin"
 definition_dir="$PREFIX/lib/$AGENT_NAME/agent-definition"
-mkdir -p "$definition_dir"
+staging_dir="$(mktemp -d "$PREFIX/lib/$AGENT_NAME/.agent-definition.XXXXXX")"
+cleanup_staging() { rm -rf "$staging_dir"; }
+trap cleanup_staging EXIT
 if [[ -n "$source_runtime" ]]; then
-  tar -C "$source_runtime" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$definition_dir" -xf -
+  tar -C "$source_runtime" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$staging_dir" -xf -
   launcher_source="$script_dir/launcher"
   version="dev"
 else
-  tar -C "$release_root/agent-definition" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$definition_dir" -xf -
+  tar -C "$release_root/agent-definition" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$staging_dir" -xf -
   launcher_source="$release_root/launcher"
   version="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$release_root/release-manifest.json" | head -n 1)"
   version="${version:-unknown}"
 fi
+
+# Replace this managed payload as a unit so deleted runtime files cannot survive
+# an upgrade. Both paths are constructed below the validated Agent prefix.
+rm -rf "$definition_dir"
+mv "$staging_dir" "$definition_dir"
+trap - EXIT
 
 tools_dir="$definition_dir/tools"
 if [[ -f "$tools_dir/pyproject.toml" ]]; then
@@ -83,6 +91,10 @@ if [[ -f "$tools_dir/pyproject.toml" ]]; then
   runtime_env_dir="$PREFIX/lib/$AGENT_NAME/environment"
   uv venv "$runtime_env_dir" --python python3 >/dev/null
   uv pip install --python "$runtime_env_dir/bin/python" "$tools_dir" >/dev/null
+elif [[ -d "$PREFIX/lib/$AGENT_NAME/environment" ]]; then
+  # A runtime that no longer declares tools must not retain tools from an older
+  # installed definition.
+  rm -rf "$PREFIX/lib/$AGENT_NAME/environment"
 fi
 
 sed -e "s/__AGENT_NAME__/$AGENT_NAME/g" "$launcher_source" > "$PREFIX/bin/$AGENT_NAME"

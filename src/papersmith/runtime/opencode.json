@@ -3,7 +3,7 @@
   "default_agent": "papersmith",
   "agent": {
     "papersmith": {
-      "description": "A minimal Agent for validating the OpenCode template infrastructure.",
+      "description": "An evidence-aware assistant for academic manuscript drafting and review.",
       "prompt": "{file:./identity.md}",
       "tools": {
         "skill": true

@@ -1,4 +1,5 @@
-# Development Memory Instructions
+# PaperSmith Development Memory
 
-Keep entries PaperSmith-specific, scrubbed, and free of credentials or raw
-provider sessions.
+Record only durable PaperSmith decisions and scrubbed validation summaries.
+Never store credentials, raw provider responses, sessions, manuscripts, or
+peer-review material.

@@ -4,25 +4,25 @@ name="${1:?usage: $0 <agent-name> [version]}"
 version="${2:-0.1.0}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$root/release/$name-$version"
-rm -rf "$out"
+[[ ! -e "$out" ]] || { echo "release output already exists: $out" >&2; exit 2; }
 mkdir -p "$out/agent-definition" "$out/bin"
 tar -C "$root/src/$name/runtime" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$out/agent-definition" -xf -
 cp "$root/distribution/launcher" "$out/launcher"
 cp "$root/distribution/install.sh" "$out/install.sh"
 cp "$root/distribution/launcher" "$out/bin/$name"
 release_url="${RELEASE_URL:-__RELEASE_URL__}"
-release_backends="${AGENT_BACKENDS:-opencode}"
+release_backends="${AGENT_BACKENDS:-opencode,codex,claude}"
 [[ "$release_backends" =~ ^(opencode|codex|claude|claude-code)(,(opencode|codex|claude|claude-code))*$ ]] || {
   echo "invalid AGENT_BACKENDS: $release_backends" >&2
   exit 2
 }
-sed -i '' "s/AGENT_NAME=\"\${AGENT_NAME:-papersmith}\"/AGENT_NAME=\"\${AGENT_NAME:-$name}\"/; s/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-opencode}\"/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-$release_backends}\"/; s/__AGENT_NAME__/$name/g; s#__RELEASE_URL__#$release_url#g" "$out/install.sh" 2>/dev/null \
-  || sed -i "s/AGENT_NAME=\"\${AGENT_NAME:-papersmith}\"/AGENT_NAME=\"\${AGENT_NAME:-$name}\"/; s/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-opencode}\"/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-$release_backends}\"/; s/__AGENT_NAME__/$name/g; s#__RELEASE_URL__#$release_url#g" "$out/install.sh"
+sed -i '' "s/AGENT_NAME=\"\${AGENT_NAME:-papersmith}\"/AGENT_NAME=\"\${AGENT_NAME:-$name}\"/; s/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-opencode,codex,claude}\"/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-$release_backends}\"/; s/__AGENT_NAME__/$name/g; s#__RELEASE_URL__#$release_url#g" "$out/install.sh" 2>/dev/null \
+  || sed -i "s/AGENT_NAME=\"\${AGENT_NAME:-papersmith}\"/AGENT_NAME=\"\${AGENT_NAME:-$name}\"/; s/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-opencode,codex,claude}\"/AGENT_BACKENDS=\"\${AGENT_BACKENDS:-$release_backends}\"/; s/__AGENT_NAME__/$name/g; s#__RELEASE_URL__#$release_url#g" "$out/install.sh"
 sed -i '' "s/__AGENT_NAME__/$name/g" "$out/launcher" "$out/bin/$name" 2>/dev/null \
   || sed -i "s/__AGENT_NAME__/$name/g" "$out/launcher" "$out/bin/$name"
 chmod +x "$out/bin/$name"
 chmod +x "$out/install.sh" "$out/launcher"
 printf '{"agent":"%s","version":"%s","definition":"src/%s/runtime","provider":"runtime-injected","opencode":"%s","backends":"%s","development_resources":"excluded"}\n' \
-  "$name" "$version" "$name" "${OPENCODE_VERSION:-latest}" "${AGENT_BACKENDS:-opencode}" > "$out/release-manifest.json"
+  "$name" "$version" "$name" "${OPENCODE_VERSION:-latest}" "$release_backends" > "$out/release-manifest.json"
 tar -C "$root/release" -czf "$root/release/$name-$version.tar.gz" "$name-$version"
 echo "built release/$name-$version.tar.gz"
