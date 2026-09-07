@@ -1,16 +1,15 @@
 # PaperSmith
 
-PaperSmith is an evidence-aware academic manuscript Agent. Its product runtime
-is self-contained under `src/papersmith/runtime/`; OpenCode, Codex, and Claude
-Code remain interchangeable execution backends.
+PaperSmith is an initialized, backend-neutral coding-agent scaffold. Its
+product runtime is self-contained under `src/papersmith/runtime/`; OpenCode,
+Codex, and Claude Code remain interchangeable execution backends.
 
 ```text
 PaperSmith runtime -> coding-agent backend -> runtime-selected provider/model
 ```
 
-The runtime assists with manuscript planning, drafting, revision, and review.
-It does not invent citations, experiments, results, or external verification.
-Provider models and credentials are selected only at runtime.
+Product-specific behavior has not been defined yet. Provider models and
+credentials are selected only at runtime.
 
 ## Development checks
 

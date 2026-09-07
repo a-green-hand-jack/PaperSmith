@@ -1,9 +1,8 @@
 # PaperSmith User Guide
 
-`papersmith` assists with evidence-aware academic manuscript drafting and
-review. Use it to plan structure, revise supplied prose, or identify concrete
-clarity and evidence gaps. It will not fabricate citations, results, or source
-verification.
+`papersmith` is an initialized coding-agent scaffold. Product-specific behavior
+has not been defined yet; use it only with an explicit task and selected
+backend/provider runtime.
 
 ## Backends and models
 

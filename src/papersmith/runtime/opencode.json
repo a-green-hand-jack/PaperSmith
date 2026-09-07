@@ -3,7 +3,7 @@
   "default_agent": "papersmith",
   "agent": {
     "papersmith": {
-      "description": "An evidence-aware assistant for academic manuscript drafting and review.",
+      "description": "An initialized, backend-neutral PaperSmith scaffold.",
       "prompt": "{file:./identity.md}",
       "tools": {
         "skill": true

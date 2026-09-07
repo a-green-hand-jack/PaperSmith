@@ -1,10 +1,8 @@
-# PaperSmith Product Scope
+# PaperSmith Initialization Scope
 
-PaperSmith helps users plan, draft, revise, and review academic manuscripts.
-It uses the selected coding-agent backend for execution and the selected
-provider/model at runtime. It does not claim source verification, citation
-existence, experimental results, or publication acceptance without evidence
-provided or checked during the task.
+This repository currently provides only an installable, backend-neutral
+PaperSmith scaffold. Product capabilities, domain behavior, and bundled tools
+are intentionally not defined yet.
 
-The product supports OpenCode, Codex, and Claude Code through the common
+The scaffold supports OpenCode, Codex, and Claude Code through the common
 launcher. Provider credentials and model availability remain runtime-owned.

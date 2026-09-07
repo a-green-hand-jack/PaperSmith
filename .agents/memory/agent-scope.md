@@ -1,8 +1,8 @@
-# PaperSmith Scope Decision
+# PaperSmith Initialization Decision
 
-PaperSmith is an evidence-aware academic manuscript assistant. It supports
-drafting, revision, structural planning, and manuscript review while avoiding
-fabricated citations, results, or external verification claims.
+PaperSmith currently has no finalized domain behavior. It is an installable,
+backend-neutral scaffold that must not imply product capabilities before a
+product scope is approved.
 
 The supported execution backends are OpenCode, Codex, and Claude Code. Provider
 availability and model entitlement are runtime concerns rather than properties

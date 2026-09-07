@@ -1,6 +1,7 @@
 # Backend and Provider Boundaries
 
-PaperSmith supports OpenCode, Codex, and Claude Code as independent backends.
+The initialized PaperSmith scaffold supports OpenCode, Codex, and Claude Code
+as independent backends.
 The runtime definition must not embed a provider key, auth store, model catalog,
 or provider-specific execution loop. OpenCode accepts a runtime provider/model;
 Codex and Claude Code use their own provider and model namespaces.
