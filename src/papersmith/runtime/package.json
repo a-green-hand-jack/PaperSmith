@@ -1,0 +1,53 @@
+{
+  "name": "papersmith-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PaperSmith product Agent runtime resources, loaded by the pi coding agent.",
+  "license": "UNLICENSED",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "agent": {
+    "manifest_version": 1,
+    "backend": "pi",
+    "system_prompt": [
+      "./identity.md",
+      "./memory-policy.md"
+    ],
+    "context": [
+      "./knowledge",
+      "./workflows"
+    ],
+    "leaf_tools": [
+      "./tools/papersmith_tool.py"
+    ],
+    "tool_checks": [
+      {
+        "command": "papersmith-tool",
+        "args": [
+          "--check"
+        ],
+        "expect": "PAPERSMITH_TOOL_OK"
+      }
+    ],
+    "default_tools": [
+      "read",
+      "grep",
+      "find",
+      "ls"
+    ],
+    "capabilities": [
+      "arxiv-source-acquisition",
+      "latex-compilation",
+      "harbor-task-conversion"
+    ],
+    "network": "allow"
+  },
+  "dependencies": {}
+}

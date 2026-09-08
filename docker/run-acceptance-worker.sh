@@ -10,7 +10,7 @@
 set -euo pipefail
 
 request="${1:?usage: $0 <acceptance-request.json>}"
-jobs_dir="${HARBOR_JOBS_DIR:-/tmp/papersmith-acceptance-jobs}"
+jobs_root="${HARBOR_JOBS_DIR:-/tmp/papersmith-acceptance-jobs}"
 enable="${HARBOR_RUN_ENABLED:-1}"
 
 test -f "$request" || { echo "acceptance request not found: $request" >&2; exit 2; }
@@ -41,7 +41,6 @@ print(task_dir)
 PY
 )"
 
-mkdir -p "$jobs_dir"
 
 if [[ "$enable" != 1 ]]; then
   echo "blocked: set HARBOR_RUN_ENABLED=1 to run real Harbor trials" >&2
@@ -51,16 +50,33 @@ fi
 request_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["request_hash"])' "$request")"
 task_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["task_id"])' "$request")"
 
+# One jobs directory per task. A shared path combined with the per-trial
+# `rm -rf` below let concurrent acceptance workers delete each other's Harbor
+# job output, which batch acceptance does by design.
+task_slug="$(printf '%s' "$task_id" | tr -c 'A-Za-z0-9._-' '_')"
+jobs_dir="$jobs_root/$task_slug"
+mkdir -p "$jobs_dir"
+
 run_trial() {
   local label="$1"
   local out="$jobs_dir/$label"
+  local log="$jobs_dir/$label.harbor.log"
   rm -rf "$out"
-  harbor run -p "$task_dir" --agent "$label" --jobs-dir "$out" --yes >/dev/null 2>&1
-  python3 - "$out" "$label" <<'PY'
+  # Record the real exit status instead of asserting success, and keep the log:
+  # a discarded log makes a failure in a 300-task batch undiagnosable.
+  local status=0
+  harbor run -p "$task_dir" --agent "$label" --jobs-dir "$out" --yes >"$log" 2>&1 || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "harbor $label trial exited $status; see $log" >&2
+  fi
+  python3 - "$out" "$label" "$status" <<'PY'
 import json, sys
 from pathlib import Path
-jobs_dir, label = sys.argv[1], sys.argv[2]
-result = sorted(Path(jobs_dir).glob("*/result.json"))[-1]
+jobs_dir, label, exit_status = sys.argv[1], sys.argv[2], sys.argv[3]
+results = sorted(Path(jobs_dir).glob("*/result.json"))
+if not results:
+    raise SystemExit(f"{label} trial produced no result.json under {jobs_dir}")
+result = results[-1]
 data = json.loads(result.read_text())
 evals = data.get("stats", {}).get("evals", {})
 trial = evals.get(f"{label}__adhoc", {})
@@ -69,30 +85,28 @@ if trial.get("n_errors", 0):
     raise SystemExit(f"{label} trial errored")
 reward = float(next(iter(reward_stats)))
 trial_id = next(iter(reward_stats.values()))[0]
-print(f"{reward} {trial_id}")
+print(f"{reward} {trial_id} {exit_status}")
 PY
 }
 
 oracle_out="$(run_trial oracle)"
 nop_out="$(run_trial nop)"
-oracle_reward="${oracle_out%% *}"
-oracle_trial="${oracle_out##* }"
-nop_reward="${nop_out%% *}"
-nop_trial="${nop_out##* }"
+read -r oracle_reward oracle_trial oracle_status <<<"$oracle_out"
+read -r nop_reward nop_trial nop_status <<<"$nop_out"
 
 receipt_path="$(dirname "$request")/$(basename "$request" | sed 's/-request\.json$/-receipt.json/')"
-python3 - "$receipt_path" "$request_hash" "$task_id" "$oracle_reward" "$oracle_trial" "$nop_reward" "$nop_trial" <<'PY'
+python3 - "$receipt_path" "$request_hash" "$task_id" "$oracle_reward" "$oracle_trial" "$oracle_status" "$nop_reward" "$nop_trial" "$nop_status" <<'PY'
 import json, sys
 receipt_path, request_hash, task_id = sys.argv[1], sys.argv[2], sys.argv[3]
-oracle_reward, oracle_trial = float(sys.argv[4]), sys.argv[5]
-nop_reward, nop_trial = float(sys.argv[6]), sys.argv[7]
+oracle_reward, oracle_trial, oracle_status = float(sys.argv[4]), sys.argv[5], int(sys.argv[6])
+nop_reward, nop_trial, nop_status = float(sys.argv[7]), sys.argv[8], int(sys.argv[9])
 receipt = {
     "worker": "papersmith-acceptance-worker",
     "request_hash": request_hash,
     "task_id": task_id,
     "trials": {
-        "oracle": {"trial_id": oracle_trial, "reward": oracle_reward, "exit_status": 0},
-        "nop": {"trial_id": nop_trial, "reward": nop_reward, "exit_status": 0},
+        "oracle": {"trial_id": oracle_trial, "reward": oracle_reward, "exit_status": oracle_status},
+        "nop": {"trial_id": nop_trial, "reward": nop_reward, "exit_status": nop_status},
     },
     "artifact_hashes": {"oracle_reward": oracle_reward, "nop_reward": nop_reward},
 }

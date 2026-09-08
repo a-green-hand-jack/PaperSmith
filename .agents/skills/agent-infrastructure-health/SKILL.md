@@ -13,6 +13,11 @@ python3 .agents/skills/agent-infrastructure-health/scripts/check_infrastructure.
   --agent papersmith
 ```
 
-It builds a clean image and verifies the three backend binaries plus the
-installed command and payload boundary. It is infrastructure-only; real Docker
-E2E remains mandatory for OpenCode, Codex, and Claude Code.
+It builds a clean image and verifies the `pi` binary, the installed
+`agent-definition/package.json` manifest, every command the runtime tools
+declare in `runtime/tools/pyproject.toml`, the `uv` prerequisite, plus the
+installed command and payload boundary. Pass `--skip-build` only when a
+known-good image was built from the current worktree.
+
+It is infrastructure-only; a real provider-backed Docker E2E on the pi backend
+remains mandatory before claiming Agent behavior.

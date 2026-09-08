@@ -10,25 +10,25 @@ RUN AGENT_NAME=$AGENT_NAME PREFIX=/opt/install SKIP_RUNTIME_INSTALL=1 PI_VERSION
 
 FROM node:22-bookworm-slim AS runtime
 ARG AGENT_NAME=papersmith
-ARG OPENCODE_VERSION=latest
-ARG CODEX_VERSION=latest
-ARG CLAUDE_CODE_VERSION=latest
 ARG PI_VERSION=latest
+ARG PI_PACKAGE=@earendil-works/pi-coding-agent
 ARG BOHR_VERSION=2.6.74
 RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates python3 \
     texlive-full \
   && rm -rf /var/lib/apt/lists/*
+# pi is the only coding-agent backend. bohr-cli is a domain tool (Bohrium LKM
+# depth enrichment and PDF text), not a backend.
 RUN npm install --global \
-  opencode-ai@${OPENCODE_VERSION} \
-  @openai/codex@${CODEX_VERSION} \
-  @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-  @mariozechner/pi-coding-agent@${PI_VERSION} \
+  ${PI_PACKAGE}@${PI_VERSION} \
   @dptech-corp/bohr-cli@${BOHR_VERSION} \
-  --no-audit --no-fund
+  --ignore-scripts --no-audit --no-fund
+# Refreshing the catalog is not what makes models appear: `pi --list-models` is
+# auth-filtered, so "No models available" in a keyless image is a credential
+# condition, not a missing catalog.
+RUN pi update --models || echo 'warning: model catalog refresh failed'
 COPY --from=builder /opt/install /opt/install
 COPY --from=builder /opt/agent/distribution/container-entrypoint.sh /usr/local/bin/agent-entrypoint
-RUN chmod +x /usr/local/bin/agent-entrypoint && mkdir -p /root/.codex /root/.claude /root/.local/share/opencode /root/.pi/agent /run/secrets \
-  && mkdir -p /home/node/.claude && chown -R node:node /home/node
+RUN chmod +x /usr/local/bin/agent-entrypoint && mkdir -p /root/.pi/agent /run/secrets
 RUN mkdir -p /workspace
 WORKDIR /workspace
 ENV AGENT_NAME=$AGENT_NAME

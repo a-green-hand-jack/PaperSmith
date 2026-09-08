@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+
+
+TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def run(label: str, command: list[str]) -> bool:
@@ -18,6 +23,20 @@ def run(label: str, command: list[str]) -> bool:
         return False
     print(f"PASS  {label}")
     return True
+
+
+def runtime_tool_commands(root: Path, agent: str) -> list[str]:
+    """Command names the runtime tools install, from [project.scripts]."""
+    project = root / "src" / agent / "runtime" / "tools" / "pyproject.toml"
+    if not project.is_file():
+        return []
+    try:
+        data = tomllib.loads(project.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(f"ERROR runtime-tools: cannot read {project.name}: {exc}")
+        return []
+    scripts = data.get("project", {}).get("scripts", {})
+    return sorted(scripts) if isinstance(scripts, dict) else []
 
 
 def main() -> int:
@@ -38,6 +57,13 @@ def main() -> int:
             print(f"ERROR required-file: missing {relative}")
             ok = False
     ok = run("definition", ["./scripts/validate-definition.sh", args.agent]) and ok
+    tools = runtime_tool_commands(root, args.agent)
+    if (root / "src" / args.agent / "runtime" / "tools" / "pyproject.toml").is_file():
+        if shutil.which("uv"):
+            print("PASS  uv-prerequisite")
+        else:
+            print("ERROR uv-prerequisite: runtime/tools/pyproject.toml exists but uv is not installed")
+            ok = False
     for directory in ("distribution", "docker", "scripts"):
         for path in (root / directory).rglob("*.sh"):
             ok = run(f"syntax {path.relative_to(root)}", ["bash", "-n", str(path)]) and ok
@@ -46,13 +72,25 @@ def main() -> int:
         return 1
     if not args.skip_build:
         ok = run("docker-build", ["docker", "build", "--build-arg", f"AGENT_NAME={args.agent}", "-t", image, "-f", "docker/Dockerfile", "."]) and ok
-    smoke = "; ".join([
-        "set -eu", "command -v opencode", "command -v codex", "command -v claude", "command -v pi",
+    # pi is the only supported backend; the image must contain it and the
+    # installed definition must carry the pi runtime manifest.
+    commands = [
+        "set -eu", "command -v pi",
+        f"test -f /opt/install/lib/{args.agent}/agent-definition/package.json",
+    ]
+    for tool in tools:
+        if not TOOL_NAME_RE.fullmatch(tool):
+            print(f"ERROR runtime-tools: invalid tool command name: {tool}")
+            ok = False
+            continue
+        commands.append(f"command -v {tool}")
+    commands += [
         f"{args.agent} --help >/dev/null", f"{args.agent} --version >/dev/null",
         "test -z \"$(find /opt/install -name AGENTS.md -print -quit)\"",
         f"test ! -d /opt/install/lib/{args.agent}/agent-definition/.agents",
         f"test ! -d /opt/install/lib/{args.agent}/agent-definition/development",
-    ])
+    ]
+    smoke = "; ".join(commands)
     ok = run("docker-runtime", ["docker", "run", "--rm", "--entrypoint", "bash", image, "-c", smoke]) and ok
     return 0 if ok else 1
 

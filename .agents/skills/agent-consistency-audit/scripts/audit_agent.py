@@ -30,7 +30,7 @@ def main() -> int:
     failures = 0
 
     manifest = root / "src" / args.agent / "agent.yaml"
-    required = [manifest, runtime / "identity.md", runtime / "memory-policy.md", runtime / "opencode.json"]
+    required = [manifest, runtime / "identity.md", runtime / "memory-policy.md", runtime / "package.json"]
     required.extend(runtime / name for name in ("knowledge", "skills", "workflows"))
     for path in required:
         if not path.exists():
@@ -44,16 +44,19 @@ def main() -> int:
         finding("ERROR", "agent.yaml name does not match --agent")
         failures += 1
     try:
-        config = json.loads((runtime / "opencode.json").read_text(encoding="utf-8"))
+        config = json.loads((runtime / "package.json").read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        finding("ERROR", f"invalid runtime/opencode.json: {exc}")
+        finding("ERROR", f"invalid runtime/package.json: {exc}")
         failures += 1
     else:
-        if config.get("default_agent") != args.agent or args.agent not in config.get("agent", {}):
-            finding("ERROR", "OpenCode default_agent/agent entry does not match selected Agent")
+        # Shallow manifest consistency only; validate-definition.sh owns the
+        # full pi manifest contract.
+        section = config.get("agent")
+        if not isinstance(section, dict) or section.get("backend") != "pi":
+            finding("ERROR", "runtime/package.json agent.backend must be pi")
             failures += 1
-        if "./skills" not in config.get("skills", []):
-            finding("ERROR", "OpenCode config must include ./skills")
+        if "./skills" not in (config.get("pi", {}) or {}).get("skills", []):
+            finding("ERROR", "runtime/package.json pi.skills must include ./skills")
             failures += 1
     if not list((runtime / "skills").rglob("SKILL.md")):
         finding("ERROR", "runtime has no product SKILL.md")

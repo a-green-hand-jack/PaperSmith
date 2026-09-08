@@ -1,7 +1,7 @@
 """Request specification and validation for PaperSmith runs."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 
 
@@ -32,11 +32,42 @@ DOMAIN_PROFILES = {
             "quant-ph", "physics.optics", "physics.flu-dyn", "physics.plasm-ph", "physics.app-ph",
         ],
     },
+    "computer-science": {
+        "materials_domain": "computer science",
+        "tag": "computer-science",
+        "conference": "arXiv cs",
+        "experience": "Reconstructing a computer-science research paper from a research overview, figures, tables and code under a fixed bibliography.",
+        "agents_domain": "computer-science",
+        "arxiv_categories": [
+            "cs.LG", "cs.CL", "cs.CV", "cs.AI", "cs.NE", "cs.IR",
+        ],
+    },
+    "mathematics": {
+        "materials_domain": "mathematics and statistics",
+        "tag": "mathematics",
+        "conference": "arXiv math",
+        "experience": "Reconstructing a mathematics, statistics or signal-processing research paper from a research overview, figures, tables and code under a fixed bibliography.",
+        "agents_domain": "mathematics",
+        "arxiv_categories": [
+            "math.OC", "math.PR", "math.ST", "math.NA", "math.DS",
+            "stat.ME", "stat.ML", "stat.AP",
+            "eess.SP", "eess.IV", "eess.SY",
+        ],
+    },
 }
 
 
 def domain_profile(domain: str) -> dict:
-    return DOMAIN_PROFILES.get(domain, DOMAIN_PROFILES["biology"])
+    """Return the profile for `domain`, refusing an unknown one.
+
+    A silent fallback here is worse than a crash: a sharded batch would keep
+    running and quietly emit tasks tagged and framed for the wrong field.
+    """
+    try:
+        return DOMAIN_PROFILES[domain]
+    except KeyError:
+        known = ", ".join(sorted(DOMAIN_PROFILES))
+        raise ConfigError(f"unknown domain: {domain!r} (known domains: {known})") from None
 
 
 @dataclass
@@ -49,6 +80,7 @@ class RequestSpec:
     model: str | None = None
     review_model: str | None = None
     backend: str | None = None
+    provider: str | None = None
     source_roots: list[Path] = field(default_factory=list)
     domain: str = "biology"
 
@@ -77,3 +109,18 @@ class RequestSpec:
         data["output"] = str(self.output) if self.output is not None else None
         data["source_roots"] = [str(r) for r in self.source_roots]
         return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RequestSpec":
+        """Rebuild a spec from its snapshot so resume runs the original request."""
+        fields = {f.name for f in dataclass_fields(cls)}
+        unknown = sorted(set(data) - fields)
+        if unknown:
+            raise ConfigError(f"request snapshot has unknown fields: {unknown}")
+        values = {key: value for key, value in data.items() if key in fields}
+        if values.get("output") is not None:
+            values["output"] = Path(values["output"])
+        values["source_roots"] = [Path(r) for r in values.get("source_roots") or []]
+        spec = cls(**values)
+        spec.validate()
+        return spec

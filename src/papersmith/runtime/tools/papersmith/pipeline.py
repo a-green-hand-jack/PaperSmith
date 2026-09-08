@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import latex
 from .acceptance import build_acceptance_request, write_acceptance_request
-from .backends import extract_json, run_phase
+from .backends import DEFAULT_BACKEND, extract_json, run_phase
 from .config import domain_profile
 from .conversion import build_source_manifest, build_task_tree
 from .contract import validate_task_tree
@@ -28,17 +28,67 @@ def _slug(identifier: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", identifier)[:64]
 
 
-def run_fixed(root: Path, spec, args) -> dict:
+def run_ledger(state: RunState) -> dict:
+    """Read the append-only event log to see what this run already produced.
+
+    The event log is the run's own record, so resume derives progress from
+    evidence rather than from a stored counter that a crash could desynchronise.
+    A paper counts as done only when its task tree and acceptance request are
+    both still on disk.
+    """
+    completed: dict[str, str] = {}
+    rejected: dict[str, str] = {}
+    events = state.root / "events.jsonl"
+    if events.is_file():
+        for line in events.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            paper = record.get("paper")
+            if not isinstance(paper, str) or not paper:
+                continue
+            if record.get("event") == "acceptance_requested":
+                completed[paper] = _slug(paper)
+                rejected.pop(paper, None)
+            elif record.get("event") == "paper_rejected" and paper not in completed:
+                rejected[paper] = str(record.get("reason") or "")
+    for paper, slug in list(completed.items()):
+        tree = state.root / "tasks" / slug
+        request = state.root / "acceptance" / f"{slug}-request.json"
+        if not tree.is_dir() or not request.is_file():
+            del completed[paper]
+    return {"completed": completed, "rejected": rejected}
+
+
+def run_fixed(root: Path, spec, args, resume: bool = False) -> dict:
     state = RunState.load(root)
     state.acquire_lock()
     try:
         papers = spec.papers or []
         if not papers:
             raise BlockedError("proposal", "fixed selection requires --paper")
+        ledger = run_ledger(state) if resume else {"completed": {}, "rejected": {}}
         task_summaries: list[dict] = []
         errors: list[dict] = []
+        reused: list[str] = []
 
         for paper in papers:
+            if paper in ledger["completed"]:
+                slug = ledger["completed"][paper]
+                reused.append(paper)
+                task_summaries.append(
+                    {
+                        "paper": paper,
+                        "task_dir": str(state.root / "tasks" / slug),
+                        "reused": True,
+                        "acceptance_requested": True,
+                    }
+                )
+                state.append_event("task_reused", paper=paper, slug=slug)
+                continue
             try:
                 summary = _build_one(state, spec, args, paper)
                 task_summaries.append(summary)
@@ -55,26 +105,42 @@ def run_fixed(root: Path, spec, args) -> dict:
             else "; ".join(e["reason"] for e in errors)
         )
         state.save()
-        return {"ok": ok, "tasks": task_summaries, "errors": errors}
+        return {"ok": ok, "tasks": task_summaries, "errors": errors, "reused": reused}
     finally:
         state.release_lock()
 
 
-def run_discovery(root: Path, spec, args) -> dict:
+def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
     """Discover arXiv candidates by domain, then build until `count` tasks."""
     state = RunState.load(root)
     state.acquire_lock()
     try:
         profile = domain_profile(spec.domain)
+        ledger = run_ledger(state) if resume else {"completed": {}, "rejected": {}}
+        # Papers already built or already rejected must not be paid for twice.
+        seen = set(ledger["completed"]) | set(ledger["rejected"])
         candidates = discover_candidates(profile["arxiv_categories"], spec.count)
-        if not candidates:
-            raise BlockedError("proposal", "arXiv discovery returned no candidates")
+        candidates = [c for c in candidates if c not in seen and f"arXiv:{c}" not in seen]
+        if not candidates and len(ledger["completed"]) < spec.count:
+            raise BlockedError("proposal", "arXiv discovery returned no unseen candidates")
         state.append_event(
             "discovery_started", domain=spec.domain, candidates=len(candidates), target=spec.count
         )
         task_summaries: list[dict] = []
         errors: list[dict] = []
         considered = 0
+        # Tasks this run already produced count toward the target, so a resumed
+        # batch tops up to `count` instead of building a second full batch.
+        for paper, slug in sorted(ledger["completed"].items()):
+            task_summaries.append(
+                {
+                    "paper": paper,
+                    "task_dir": str(state.root / "tasks" / slug),
+                    "reused": True,
+                    "acceptance_requested": True,
+                }
+            )
+        reused = len(task_summaries)
         for identifier in candidates:
             if len(task_summaries) >= spec.count:
                 break
@@ -103,6 +169,7 @@ def run_discovery(root: Path, spec, args) -> dict:
             "domain": spec.domain,
             "target": spec.count,
             "candidates_considered": considered,
+            "reused": reused,
             "tasks": task_summaries,
             "errors": errors,
         }
@@ -149,7 +216,7 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     validation = {"valid": False, "issues": ["no attempt"]}
     session = {"fingerprint": None}
     for attempt in range(3):
-        session = run_phase(args.backend or "opencode", args.provider, args.model, prompt, str(state.root))
+        session = run_phase(args.backend or DEFAULT_BACKEND, args.provider, args.model, prompt, str(state.root))
         output = extract_json(session.get("stdout") or "") or {}
         validation = validate_materials_output(output)
         if validation["valid"]:
@@ -211,7 +278,7 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
 
     # 5. independent review gates
     review_model = args.review_model or args.model
-    backend = args.backend or "opencode"
+    backend = args.backend or DEFAULT_BACKEND
     from .integrity import sha256_file
 
     def _tail(path: Path, n: int) -> str:

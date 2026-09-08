@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .acceptance import verify_acceptance_receipt
-from .backends import doctor_report
-from .config import ConfigError, RequestSpec
+from .backends import BACKENDS, DEFAULT_BACKEND, doctor_report
+from .config import DOMAIN_PROFILES, ConfigError, RequestSpec
 from .integrity import hash_json, sha256_file
 from .pipeline import run_discovery, run_fixed
 from .sources import BlockedError
@@ -25,6 +26,7 @@ def _build_spec(args) -> RequestSpec:
         model=getattr(args, "model", None),
         review_model=getattr(args, "review_model", None),
         backend=getattr(args, "backend", None),
+        provider=getattr(args, "provider", None),
         source_roots=list(getattr(args, "source", None) or []),
         domain=getattr(args, "domain", None) or "biology",
     )
@@ -89,8 +91,28 @@ def cmd_resume(args) -> int:
     if sha256_file(request_file) != state.data.get("request_hash"):
         _print_json({"ok": False, "reason": "request inputs changed; downstream evidence invalidated"})
         return 2
-    _print_json({"ok": True, "note": "resume re-runs run_fixed on the same workspace; not yet implemented incrementally"})
-    return 0
+    try:
+        spec = RequestSpec.from_dict(json.loads(request_file.read_text(encoding="utf-8")))
+    except (ConfigError, json.JSONDecodeError) as exc:
+        _print_json({"ok": False, "reason": f"request snapshot is unusable: {exc}"})
+        return 2
+    # Runtime wiring is not part of the snapshot: a resumed run may legitimately
+    # use a different provider or model, so it is read from the environment.
+    args.request = spec.request
+    args.backend = spec.backend or DEFAULT_BACKEND
+    args.provider = os.environ.get("LLM_PROVIDER") or spec.provider
+    args.model = os.environ.get("LLM_MODEL") or spec.model
+    args.review_model = os.environ.get("LLM_REVIEW_MODEL") or spec.review_model or args.model
+    try:
+        if spec.selection == "fixed":
+            result = run_fixed(state.root, spec, args, resume=True)
+        else:
+            result = run_discovery(state.root, spec, args, resume=True)
+    except RunLocked as exc:
+        _print_json({"ok": False, "reason": str(exc)})
+        return 2
+    _print_json(result)
+    return 0 if result.get("ok") else 2
 
 
 def cmd_validate(args) -> int:
@@ -177,11 +199,14 @@ def main(argv=None) -> int:
     create.add_argument("--paper", action="append")
     create.add_argument("--output", type=Path, required=True)
     create.add_argument("--source", type=Path, action="append")
-    create.add_argument("--backend", choices=["opencode"])
-    create.add_argument("--provider")
-    create.add_argument("--model")
-    create.add_argument("--review-model")
-    create.add_argument("--domain", choices=["biology", "physics"], default="biology")
+    create.add_argument("--backend", choices=list(BACKENDS), default=DEFAULT_BACKEND)
+    create.add_argument("--provider", default=os.environ.get("LLM_PROVIDER") or None)
+    create.add_argument("--model", default=os.environ.get("LLM_MODEL") or None)
+    create.add_argument(
+        "--review-model",
+        default=os.environ.get("LLM_REVIEW_MODEL") or os.environ.get("LLM_MODEL") or None,
+    )
+    create.add_argument("--domain", choices=sorted(DOMAIN_PROFILES), default="biology")
     create.add_argument("--describe", action="store_true")
     create.set_defaults(fn=cmd_create)
 

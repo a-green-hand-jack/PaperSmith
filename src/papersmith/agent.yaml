@@ -1,5 +1,4 @@
 name: papersmith
 runtime_dir: runtime
 knowledge_dir: runtime/knowledge
-skills_dir: runtime/skills
 workflows_dir: runtime/workflows

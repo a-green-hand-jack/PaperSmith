@@ -1,6 +1,10 @@
 # PaperSmith 用户指南
 
-PaperSmith 把用户请求和真实论文来源转换为可交付的 Harbor 科研写作任务（论文重建格式）。本指南描述当前可用的命令与运行契约。
+## 你最终拿到什么
+
+一批**已通过真实 Harbor 验收**的科研论文写作任务，发布到 HF 数据集 `Jack-Jieke-Wu/Paper-Writing-Exam`。判定标准只有一条：每个任务真实跑出 `oracle=1.0` 且 `nop=0.0`，回执与验收请求哈希一致。除此之外的任何信号——镜像起来了、模板编译过了、模型说完成了——都不算数。
+
+本指南描述当前可用的命令与运行契约。
 
 ## 1. PaperSmith 做什么
 
@@ -8,15 +12,35 @@ PaperSmith 把用户请求和真实论文来源转换为可交付的 Harbor 科�
 
 模型只承担两个只读角色：材料概述（含图/表描述，校验失败自动重试 3 次）和三道独立审核。其余下载、解析、编译、哈希、状态转换全部由确定性控制程序完成。
 
-## 2. 检查环境
+## 2. 后端、LLM 与凭据
+
+后端是 pi，且只有 pi。provider 与 model **只从运行时进入**，实现与 LLM 无关：换模型只改参数，不改代码。
+
+```bash
+# 1) 产出 mode-600 env 文件（accountctl 是唯一的凭据注入入口）
+accountctl docker-run --providers gravarc-router --env-file-only --out /run/user/$(id -u)/ps.env
+
+# 2) 容器化 pi 模型目录：拷贝 provider 条目并把 apiKey 指向环境变量，绝不写入密钥
+python3 - ~/.pi/agent/models.json gravarc-router /tmp/pi-models.json <<'PY'
+import json, re, sys
+src, provider, dest = sys.argv[1:4]
+entry = dict(json.load(open(src))["providers"][provider])
+entry["apiKey"] = "$" + re.sub(r"[^A-Za-z0-9]", "_", provider).upper() + "_API_KEY"
+json.dump({"providers": {provider: entry}}, open(dest, "w"), indent=2)
+PY
+```
+
+`accountctl docker-run` 传不了 docker flag、也挂不了目录，所以它只负责产出 env 文件；容器由本仓库的 runner 拉起。
+
+## 3. 检查环境
 
 ```bash
 papersmith doctor
 ```
 
-输出 Python 版本、可发现的 backend 二进制（opencode/codex/claude/pi）、文档工具（pdflatex/pdftotext/docker）以及能力标志。模型可发现性需要 provider 凭据，doctor 不发起付费调用。
+输出 Python 版本、pi 是否可发现、文档工具（pdflatex/pdftotext/docker）以及能力标志。模型可发现性需要 provider 凭据，doctor 不发起付费调用。
 
-## 3. 只解析请求
+## 4. 只解析请求
 
 用 `--describe` 只做确定性请求解析，不创建运行目录、不调用模型：
 
@@ -24,40 +48,40 @@ papersmith doctor
 papersmith create '基于指定论文制作完整科研论文写作任务' \
   --selection fixed --paper arXiv:2601.02265 \
   --count 1 --output /tmp/run \
-  --backend opencode --provider opencode-go \
-  --model deepseek-v4-flash --review-model deepseek-v4-flash \
+  --provider gravarc-router --model kimi-k3 \
   --describe
 ```
 
-## 4. 正式创建任务
+`--provider`/`--model` 省略时从 `LLM_PROVIDER`/`LLM_MODEL` 读取；两者都没有时，需要模型的阶段会明确报错而不是猜一个默认值。
+
+## 5. 正式创建任务
 
 ```bash
 papersmith create '基于指定论文制作完整科研论文写作任务' \
   --selection fixed --paper arXiv:2601.02265 \
   --count 1 --output /tmp/run \
-  --backend opencode --provider opencode-go \
-  --model deepseek-v4-flash --review-model deepseek-v4-flash
+  --provider gravarc-router --model kimi-k3
 ```
 
 关键点：
 
-- `--selection fixed` + `--paper <arXiv/DOI/URL>`：当前唯一完整实现的选择模式；论文被判定不可还原（`paper_rejected`）时阻塞，不擅自换题。
-- `--selection discovery`：尚未接入新管线，会返回错误提示改用 fixed。
-- `--count 1`：目标最终交付任务数。
-- `--output`：必须是空目录或不存在；已有非空目录需用 `resume`。
+- `--selection fixed` + `--paper <arXiv/DOI/URL>`：论文被判定不可还原（`paper_rejected`）时阻塞，不擅自换题。
+- `--selection discovery` + `--domain`：按领域从 arXiv 发现候选并逐个尝试，直到达到 `--count`。当前候选池仍限 arXiv。
+- `--count N`：目标最终交付任务数。
+- `--output`：必须是空目录或不存在。
 - `--source <目录>`：额外授权读取的本地目录（不授权父目录）。
 
-## 5. 查看、恢复与验证
+## 6. 查看、恢复与验证
 
 ```bash
 papersmith status   /tmp/run     # 只读 run.json 与各阶段 manifest 状态
-papersmith resume   /tmp/run     # 校验请求快照后重跑 run_fixed（增量复用尚未实现）
+papersmith resume   /tmp/run     # 校验请求快照后重跑（增量复用尚未实现）
 papersmith validate /tmp/run     # 校验回执并组装 delivery.json
 ```
 
 `validate` 在 `acceptance/receipt.json` 存在且与验收请求哈希一致时返回 valid 并写回 `delivery.json`（绑定任务、gate 证据、`oracle`/`nop` 回执与指纹）。
 
-## 6. 运行目录
+## 7. 运行目录
 
 ```text
 run.json                 # 当前阶段、状态与请求哈希
@@ -69,7 +93,7 @@ tasks/<slug>/            # 可交付 Harbor task
 delivery.json            # 交付与验收证据索引
 ```
 
-## 7. 验收
+## 8. 验收
 
 真实 Harbor 试跑在**宿主机**执行，不在控制容器内：
 
@@ -77,17 +101,26 @@ delivery.json            # 交付与验收证据索引
 docker/run-acceptance-worker.sh <acceptance-request.json>
 ```
 
-该 worker 依次跑 oracle（期望 `reward=1.0`）与 nop（期望 `reward=0.0`）试跑，把只读 `receipt.json` 写回运行目录。之后运行 `papersmith validate` 组装 delivery。镜像启动或编译成功不等于验收通过。
+该 worker 依次跑 oracle（期望 `reward=1.0`）与 nop（期望 `reward=0.0`），把只读 `receipt.json` 写回运行目录。之后运行 `papersmith validate` 组装 delivery。
 
-## 8. 发布
+批量场景用 `scripts/accept-run.sh <run-dir>` 遍历一个运行目录下所有待验收请求。
 
-验收通过且 `validate` 返回 valid 后，将任务树按 `lifesci-paperrecon-short/lspr-NNNN` 布局上传到 HF `Jack-Jieke-Wu/Paper-Writing-Exam`，并在 `dataset-manifest.jsonl` 追加条目。发布是显式步骤，`create` 不会自动发布。
+## 9. 发布
 
-## 9. 失败处理
+验收通过且 `validate` 返回 valid 后，将任务树按 `<config>/<prefix>-NNNN` 布局上传到 HF `Jack-Jieke-Wu/Paper-Writing-Exam`，并在 `dataset-manifest.jsonl` 追加条目：
+
+```bash
+scripts/publish-run.sh <run-dir> Jack-Jieke-Wu/Paper-Writing-Exam <config-dir> <prefix>
+```
+
+发布是显式步骤，`create` 不会自动发布。
+
+## 10. 失败处理
 
 | 现象 | 处理方式 |
 | --- | --- |
-| `doctor` 报依赖或 backend 不可用 | 修复依赖或模型配置后重查 |
+| `doctor` 报依赖或 pi 不可用 | 修复依赖或安装后重查 |
+| 缺 provider/model | 传 `--provider`/`--model` 或设 `LLM_PROVIDER`/`LLM_MODEL`；不会有默认值 |
 | 认证、额度或网络中断 | 修复外部服务后重跑 create |
 | `paper_rejected`（fixed） | 阅读拒绝原因；换论文需新的明确请求 |
 | 材料概述校验失败 | 管线自动重试 3 次；仍失败则阻塞并报告问题 |

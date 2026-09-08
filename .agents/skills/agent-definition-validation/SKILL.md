@@ -28,16 +28,15 @@ current helper and never assume another repository's example scaffold.
    ```
 
 3. Before claiming Agent behavior, run a real request through
-   `docker/run-papersmith-e2e.sh`.
-   Inject only the selected backend's credential through an explicit runtime
-   environment variable or read-only auth/key mount. Observe the model response
-   and inspect any requested workspace artifact.
+   `docker/run-papersmith-e2e.sh`. The backend is always pi; inject only the
+   provider credential through an explicit runtime environment variable or
+   read-only auth/key mount. Observe the model response and inspect any
+   requested workspace artifact.
 
 4. When release contents changed, build and inspect a fresh archive:
 
    ```bash
-   AGENT_BACKENDS=opencode,codex,claude \
-     ./scripts/build-release.sh <agent_name> <version>
+   ./scripts/build-release.sh <agent_name> <version>
    tar -tzf release/<agent_name>-<version>.tar.gz
    ```
 
@@ -45,6 +44,9 @@ current helper and never assume another repository's example scaffold.
 
 - An image build, binary version check, or run without a real provider is
   infrastructure-only evidence, not a successful Agent E2E.
+- `src/<agent_name>/runtime/package.json` is the runtime manifest; its `agent`
+  section declares `backend: pi`. A definition that names another backend, or
+  that embeds a provider key, model catalog, or auth store, fails validation.
 - Record acceptance evidence in the relevant GitHub issue. Add a durable
   `.agents/memory/` entry only when the repository needs the decision or lesson
   for future development; do not store raw provider output, credentials, or
@@ -59,5 +61,5 @@ current helper and never assume another repository's example scaffold.
 ## Exit condition
 
 The applicable structural, runtime, behavior, and release-boundary checks pass;
-the evidence identifies the actual Agent, backend, provider/model, runtime
-revision, and artifact without exposing credentials.
+the evidence identifies the actual Agent, provider/model, runtime revision, and
+artifact without exposing credentials. The backend is recorded as pi.

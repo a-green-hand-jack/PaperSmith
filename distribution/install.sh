@@ -3,11 +3,9 @@ set -euo pipefail
 
 AGENT_NAME="${AGENT_NAME:-papersmith}"
 PREFIX="${PREFIX:-$HOME/.local}"
-OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
-CODEX_VERSION="${CODEX_VERSION:-latest}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 PI_VERSION="${PI_VERSION:-latest}"
-AGENT_BACKENDS="${AGENT_BACKENDS:-opencode,codex,claude,pi}"
+PI_PACKAGE="${PI_PACKAGE:-@earendil-works/pi-coding-agent}"
+AGENT_BACKENDS="${AGENT_BACKENDS:-pi}"
 RELEASE_URL="${RELEASE_URL:-${AGENT_RELEASE_URL:-__RELEASE_URL__}}"
 
 [[ "$AGENT_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || {
@@ -15,8 +13,10 @@ RELEASE_URL="${RELEASE_URL:-${AGENT_RELEASE_URL:-__RELEASE_URL__}}"
   exit 2
 }
 
-[[ "$AGENT_BACKENDS" =~ ^(opencode|codex|claude|claude-code|pi)(,(opencode|codex|claude|claude-code|pi))*$ ]] || {
-  echo "invalid AGENT_BACKENDS: $AGENT_BACKENDS" >&2
+# This Agent supports pi and only pi. A stale multi-backend value must fail
+# loudly rather than install a backend the runtime definition cannot drive.
+[[ "$AGENT_BACKENDS" =~ ^(pi|pi-coding-agent)$ ]] || {
+  echo "invalid AGENT_BACKENDS: $AGENT_BACKENDS (this Agent supports pi only)" >&2
   exit 2
 }
 
@@ -55,8 +55,7 @@ EOF
   release_install="$(find "$download_dir" -mindepth 2 -maxdepth 3 -type f -name install.sh -print -quit)"
   [[ -n "$release_install" ]] || { echo "release archive does not contain install.sh" >&2; exit 2; }
   AGENT_NAME="$AGENT_NAME" PREFIX="$PREFIX" AGENT_BACKENDS="$AGENT_BACKENDS" \
-    OPENCODE_VERSION="$OPENCODE_VERSION" CODEX_VERSION="$CODEX_VERSION" \
-    CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" PI_VERSION="$PI_VERSION" \
+    PI_VERSION="$PI_VERSION" PI_PACKAGE="$PI_PACKAGE" \
     "$release_install"
   exit 0
 fi
@@ -66,22 +65,60 @@ definition_dir="$PREFIX/lib/$AGENT_NAME/agent-definition"
 staging_dir="$(mktemp -d "$PREFIX/lib/$AGENT_NAME/.agent-definition.XXXXXX")"
 cleanup_staging() { rm -rf "$staging_dir"; }
 trap cleanup_staging EXIT
+
+# package.json is the pi resource manifest and must ship. Build residue from a
+# development checkout must not.
+payload_excludes=(
+  --exclude=AGENTS.md
+  --exclude=node_modules
+  --exclude=__pycache__
+  --exclude='*.egg-info'
+  --exclude=build
+)
 if [[ -n "$source_runtime" ]]; then
-  tar -C "$source_runtime" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$staging_dir" -xf -
+  tar -C "$source_runtime" "${payload_excludes[@]}" -cf - . | tar -C "$staging_dir" -xf -
   launcher_source="$script_dir/launcher"
   version="dev"
 else
-  tar -C "$release_root/agent-definition" --exclude=AGENTS.md --exclude=node_modules --exclude=package.json --exclude=package-lock.json -cf - . | tar -C "$staging_dir" -xf -
+  tar -C "$release_root/agent-definition" "${payload_excludes[@]}" -cf - . | tar -C "$staging_dir" -xf -
   launcher_source="$release_root/launcher"
   version="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$release_root/release-manifest.json" | head -n 1)"
   version="${version:-unknown}"
 fi
+
+[[ -f "$staging_dir/package.json" ]] || {
+  echo "Agent definition payload is missing package.json (the pi resource manifest)" >&2
+  exit 2
+}
 
 # Replace this managed payload as a unit so deleted runtime files cannot survive
 # an upgrade. Both paths are constructed below the validated Agent prefix.
 rm -rf "$definition_dir"
 mv "$staging_dir" "$definition_dir"
 trap - EXIT
+
+# The manifest is data, not a build script. Refuse lifecycle scripts, and refuse
+# an unpinned dependency install.
+command -v node >/dev/null 2>&1 || {
+  echo "node is required to validate the Agent resource manifest" >&2
+  exit 2
+}
+manifest_deps="$(node -e '
+const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (manifest.scripts && Object.keys(manifest.scripts).length > 0) {
+  process.stderr.write("agent-definition/package.json must not declare npm lifecycle scripts\n");
+  process.exit(2);
+}
+process.stdout.write(Object.keys(manifest.dependencies || {}).length > 0 ? "yes" : "no");
+' "$definition_dir/package.json")"
+if [[ "$manifest_deps" == yes ]]; then
+  [[ -f "$definition_dir/package-lock.json" ]] || {
+    echo "agent-definition declares dependencies without package-lock.json; refusing an unpinned install" >&2
+    exit 2
+  }
+  (cd "$definition_dir" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null)
+fi
 
 tools_dir="$definition_dir/tools"
 if [[ -f "$tools_dir/pyproject.toml" ]]; then
@@ -91,7 +128,15 @@ if [[ -f "$tools_dir/pyproject.toml" ]]; then
   }
   runtime_env_dir="$PREFIX/lib/$AGENT_NAME/environment"
   uv venv "$runtime_env_dir" --python python3 >/dev/null
-  uv pip install --python "$runtime_env_dir/bin/python" "$tools_dir" >/dev/null
+  # Build from a throwaway copy so build/, *.egg-info and __pycache__ never land
+  # in the installed definition.
+  tools_build_dir="$(mktemp -d)"
+  trap 'rm -rf "$tools_build_dir"' EXIT
+  tar -C "$tools_dir" --exclude=__pycache__ --exclude='*.egg-info' --exclude=build -cf - . \
+    | tar -C "$tools_build_dir" -xf -
+  uv pip install --python "$runtime_env_dir/bin/python" "$tools_build_dir" >/dev/null
+  rm -rf "$tools_build_dir"
+  trap - EXIT
 elif [[ -d "$PREFIX/lib/$AGENT_NAME/environment" ]]; then
   # A runtime that no longer declares tools must not retain tools from an older
   # installed definition.
@@ -100,49 +145,19 @@ fi
 
 sed -e "s/__AGENT_NAME__/$AGENT_NAME/g" "$launcher_source" > "$PREFIX/bin/$AGENT_NAME"
 chmod +x "$PREFIX/bin/$AGENT_NAME"
-printf '{"agent":"%s","version":"%s","provider":"runtime-injected","backends":"%s"}\n' \
-  "$AGENT_NAME" "$version" "$AGENT_BACKENDS" > "$PREFIX/lib/$AGENT_NAME/release-manifest.json"
+printf '{"agent":"%s","version":"%s","provider":"runtime-injected","backend":"pi"}\n' \
+  "$AGENT_NAME" "$version" > "$PREFIX/lib/$AGENT_NAME/release-manifest.json"
 
-# Docker builds install the selected runtimes in the final image. A release
-# installation uses npm only when the user has no existing backend binary;
-# this keeps each coding agent hidden behind the product command without
-# requiring a separate manual runtime installation step.
-if [[ -z "${SKIP_RUNTIME_INSTALL:-}" && -z "${SKIP_OPENCODE_INSTALL:-}" ]]; then
-  command -v npm >/dev/null 2>&1 || {
-    echo "Node.js/npm is required to install requested Agent runtimes" >&2
-    exit 2
-  }
-  IFS=',' read -r -a requested_backends <<< "$AGENT_BACKENDS"
-  for requested_backend in "${requested_backends[@]}"; do
-    case "$requested_backend" in
-      opencode)
-        runtime_binary=opencode
-        runtime_package="opencode-ai@$OPENCODE_VERSION"
-        ;;
-      codex)
-        runtime_binary=codex
-        runtime_package="@openai/codex@$CODEX_VERSION"
-        ;;
-      claude|claude-code)
-        requested_backend=claude
-        runtime_binary=claude
-        runtime_package="@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-        ;;
-      pi)
-        runtime_binary=pi
-        runtime_package="@mariozechner/pi-coding-agent@$PI_VERSION"
-        ;;
-      '')
-        continue
-        ;;
-      *)
-        echo "unsupported Agent runtime backend: $requested_backend" >&2
-        exit 2
-        ;;
-    esac
-    if ! command -v "$runtime_binary" >/dev/null 2>&1; then
-      npm install --prefix "$PREFIX/lib/$AGENT_NAME/runtimes/$requested_backend" "$runtime_package" \
-        --no-audit --no-fund >/dev/null
-    fi
-  done
+# Docker builds install pi in the final image. A release installation uses npm
+# only when the user has no existing pi binary; this keeps the coding agent
+# hidden behind the product command without a separate manual step.
+if [[ -z "${SKIP_RUNTIME_INSTALL:-}" ]]; then
+  if ! command -v pi >/dev/null 2>&1; then
+    command -v npm >/dev/null 2>&1 || {
+      echo "Node.js/npm is required to install the pi runtime" >&2
+      exit 2
+    }
+    npm install --prefix "$PREFIX/lib/$AGENT_NAME/runtimes/pi" "$PI_PACKAGE@$PI_VERSION" \
+      --ignore-scripts --no-audit --no-fund >/dev/null
+  fi
 fi

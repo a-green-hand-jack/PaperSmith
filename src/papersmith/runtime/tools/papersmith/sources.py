@@ -374,16 +374,35 @@ def safe_extract_archive(data: bytes, dest: Path) -> None:
 
 
 def fetch_arxiv_source(identifier: str, dest: Path, timeout: int = 240) -> dict:
-    """Download and safely extract the arXiv e-print source bundle."""
+    """Download and safely extract the arXiv e-print source bundle.
+
+    Idempotent: a completed fetch records its own receipt, so resuming an
+    interrupted batch reuses the bundle already on disk instead of
+    re-downloading it. A partial extraction leaves no receipt and is redone.
+    """
     arxiv_id = _parse_arxiv_id(identifier)
+    receipt_path = dest / ".source-fetch.json"
+    if receipt_path.is_file():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            receipt = None
+        if receipt and receipt.get("arxiv_id") == arxiv_id and receipt.get("sha256"):
+            receipt["source_dir"] = str(dest)
+            receipt["reused"] = True
+            return receipt
     data = _http_get(f"https://arxiv.org/e-print/{arxiv_id}", timeout=timeout, max_bytes=SOURCE_MAX_BYTES)
     if data.startswith(b"%PDF"):
         raise BlockedError("proposal", "arXiv e-print returned a PDF, not a source bundle; paper has no LaTeX source")
     dest.mkdir(parents=True, exist_ok=True)
     safe_extract_archive(data, dest)
-    return {
+    result = {
         "arxiv_id": arxiv_id,
         "source_dir": str(dest),
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
+        "reused": False,
     }
+    # Written last: the receipt is what makes the extraction above replayable.
+    receipt_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result

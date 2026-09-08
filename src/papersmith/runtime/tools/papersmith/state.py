@@ -1,6 +1,7 @@
 """Run workspace state: layout, lock, run.json and append-only events."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from datetime import datetime, timezone
@@ -65,15 +66,36 @@ class RunState:
 
     # -- lock ---------------------------------------------------------------
     def acquire_lock(self) -> None:
+        """Take an advisory lock the kernel releases if this process dies.
+
+        A batch run is long and its containers get killed (OOM, timeout, docker
+        stop). An exclusive-create lock file would survive that and wedge the
+        run permanently, so the lock is an flock: it disappears with the
+        process, whether or not the process got to clean up.
+        """
         lock = self.root / ".lock"
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
         try:
-            self._lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(self._lock_fd, f"{os.getpid()}\n".encode())
-        except FileExistsError:
-            raise RunLocked(f"run is already locked: {self.root}")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            holder = ""
+            try:
+                holder = lock.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+            raise RunLocked(
+                f"run is already locked by a live process: {self.root}"
+                + (f" (holder pid {holder})" if holder else "")
+            )
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+        self._lock_fd = fd
 
     def release_lock(self) -> None:
         if self._lock_fd is not None:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
             os.close(self._lock_fd)
             self._lock_fd = None
             (self.root / ".lock").unlink(missing_ok=True)

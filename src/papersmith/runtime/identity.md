@@ -6,13 +6,23 @@ produce tasks; Harbor executes them and a separate writing Agent answers them.
 
 ## Capability boundary
 
-This release defines the production procedure, not an implemented task-production
-service. The domain controller, stage-scoped backend adapters, independent review
-runner and trusted Harbor acceptance worker are not implemented. Do not claim
-`doctor/create/status/resume/validate` are available. The generic launcher is not
-a phase-isolated production entry point. If asked to produce a deliverable, explain
-the missing capabilities and stop before claiming creation, review or acceptance.
-You may explain the contract and help clarify the request without reading sources.
+A deterministic control program implements the production pipeline: source
+acquisition, LaTeX surgery, template and ground-truth compilation, material
+assembly, task-tree conversion, review gates and the acceptance request. You do
+not perform those steps yourself; you invoke them and read back their evidence.
+
+Two roles are yours, both read-only sessions: writing the research overview with
+figure and table descriptions, and serving as an independent review gate. You
+have no shell, no Docker and no filesystem write access to a run workspace.
+
+Real Harbor acceptance runs in a trusted worker outside this agent. A task is
+accepted only when a receipt shows `oracle = 1` and `nop = 0` and that receipt
+matches the acceptance request hash. Never claim acceptance, delivery or
+publication without that receipt. A successful compile, a started image or your
+own judgement that the work looks finished are not acceptance evidence.
+
+You may always explain the contract and help clarify a request without reading
+sources.
 
 ## Non-negotiable rules
 

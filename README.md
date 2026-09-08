@@ -1,12 +1,21 @@
 # PaperSmith
 
-PaperSmith 把真实论文来源（arXiv）转换为可审核、可验收、可交付的科研论文写作评测任务（Harbor task），产出与 HF 数据集 `Jack-Jieke-Wu/Paper-Writing-Exam` 的 `lifesci-paperrecon-short/` 论文重建格式一致的任务树。写作 Agent 只看到题面与公开材料；真实 Harbor `oracle=1`、`nop=0` 是权威验收门槛。
+## 产出什么
 
-当前已实现的运行时在 `src/papersmith/runtime/`：确定性控制程序 `tools/papersmith/`（Python）负责下载、解析、编译、哈希、任务树组装与验收请求；模型只以只读会话承担「研究概述 + 图表描述」和「三道独立审核」两个角色。首个任务 `lspr-0023` 已通过真实 Harbor 验收并发布到 HF。
+**一批可直接用于评测的 Harbor 科研论文写作任务，发布在 HF 数据集 [`Jack-Jieke-Wu/Paper-Writing-Exam`](https://huggingface.co/datasets/Jack-Jieke-Wu/Paper-Writing-Exam)。**
+
+每个交付任务是一棵完整的任务树：写作 Agent 只看到题面与公开材料（研究概述、固定引用、可编译 LaTeX 模板、图表描述与清单、图片），要从中还原出一篇完整论文；ground truth 与私有校验器不进入它的上下文。任务只有在真实 Harbor 试跑拿到 `oracle=1.0` 且 `nop=0.0` 后才算交付——镜像能起、模板能编译、模型自报通过，都不是验收证据。
+
+当前状态要说清楚：**已发布 1 个任务** `lspr-0023`（论文 `arXiv:2601.02265`，真实 `oracle=1/nop=0`），布局 `lifesci-paperrecon-short/`。批量并行产线正在建设中，尚未产出过一整批。
+
+```text
+真实论文 → 确定性管线 → 可验收任务树 → 真实 Harbor 试跑 → HF 数据集
+                                          oracle=1 / nop=0
+```
 
 ## 一次任务如何流转
 
-`create --selection fixed --paper <arXiv>` 走完整确定性管线；`discovery` 选择与增量 `resume` 尚未接入。
+`create --selection fixed --paper <arXiv>` 走完整确定性管线；discovery 选择已实现但候选池仍限 arXiv，增量 `resume` 尚未实现。
 
 ```mermaid
 flowchart TD
@@ -44,6 +53,20 @@ PaperSmith 不把产品逻辑集中在模型提示词里，而是分层：
 | `runtime/` scaffold | 身份、memory policy、knowledge/skills/workflows 的领域描述 | 替代确定性校验器或隐藏失败 |
 
 模型可以理解请求、组织材料、做科学判断；控制程序必须负责下载、解析、复制、哈希、编译和状态转换。工具接口返回结构化结果与证据路径，模型的一句「完成」不算状态。
+
+## 后端与 LLM
+
+后端是 **pi，且只有 pi**（`@earendil-works/pi-coding-agent`）。运行时清单是 `src/papersmith/runtime/package.json`，资源经 pi 自己的加载器（`--skill` 等）进入；ambient discovery 全部关闭。每个模型会话都以 `--no-tools --print --no-session` 运行——「只读」和「不留会话」是结构性保证，不是提示词里的请求。
+
+**实现与 LLM 无关。** provider 与 model 只从运行时进入（`--provider`/`--model` 或 `LLM_PROVIDER`/`LLM_MODEL`），代码里不出现任何具体 provider 或 model 名。换 LLM 只需改运行时参数并重跑一次冒烟，不需要改管线代码。当前选用 `gravarc-router` / `kimi-k3`。
+
+凭据统一由 `accountctl` 注入：
+
+```bash
+accountctl docker-run --providers gravarc-router --env-file-only --out <path>
+```
+
+注意 `accountctl docker-run` 本身挂不了目录也传不了 docker flag，所以它只用来产出 mode-600 env 文件，容器由本仓库的 runner 拉起。
 
 ## 交付任务树
 
@@ -92,6 +115,6 @@ tasks/<slug>/
 
 ## 发布
 
-发布目标：HF 数据集 `Jack-Jieke-Wu/Paper-Writing-Exam`，布局 `lifesci-paperrecon-short/lspr-NNNN`。当前已发布 `lspr-0023`（论文 `arXiv:2601.02265`，oracle=1 / nop=0）。上传前 `papersmith validate` 必须返回 valid；`dataset-manifest.jsonl` 追加新条目。
+发布目标：HF 数据集 `Jack-Jieke-Wu/Paper-Writing-Exam`，布局 `<config>/<prefix>-NNNN`。上传前 `papersmith validate` 必须返回 valid；`dataset-manifest.jsonl` 追加新条目。发布是显式步骤，`create` 不会自动发布。
 
 用户操作见 [USER.md](USER.md)，实现、测试与发布规则见 [DEV.md](DEV.md)。

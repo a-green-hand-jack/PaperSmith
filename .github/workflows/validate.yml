@@ -8,9 +8,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.x' }
       - run: ./scripts/validate-definition.sh papersmith
+      - run: python3 scripts/check-pi-only-backend.py
       - run: docker build --build-arg AGENT_NAME=papersmith -t papersmith:test -f docker/Dockerfile .
       - run: >-
           docker run --rm --entrypoint bash papersmith:test -c
-          'command -v opencode && command -v codex && command -v claude &&
+          'command -v pi &&
+          test -f /opt/install/lib/papersmith/agent-definition/package.json &&
+          command -v papersmith-cli && command -v papersmith-tool &&
+          papersmith-tool --check &&
           papersmith --help && papersmith --version &&
+          papersmith doctor >/dev/null &&
           test -z "$(find /opt/install -name AGENTS.md -print -quit)"'
