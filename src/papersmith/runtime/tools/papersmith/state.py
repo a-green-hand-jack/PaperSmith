@@ -84,9 +84,13 @@ class RunState:
                 holder = lock.read_text(encoding="utf-8").strip()
             except OSError:
                 pass
+            # The recorded pid is namespace-local: a run started in a container
+            # writes the pid it sees there, which means nothing on the host. It
+            # is a breadcrumb only. Whether the lock is actually held is decided
+            # by the flock above, which the kernel releases when the holder dies.
             raise RunLocked(
-                f"run is already locked by a live process: {self.root}"
-                + (f" (holder pid {holder})" if holder else "")
+                f"run is already locked: {self.root}"
+                + (f" (holder recorded pid {holder}, possibly namespace-local)" if holder else "")
             )
         os.ftruncate(fd, 0)
         os.write(fd, f"{os.getpid()}\n".encode())

@@ -27,8 +27,17 @@ task_dir = req["task_dir"]
 if not os.path.isdir(task_dir):
     run_root = Path(request_path).resolve().parent.parent
     slug = req["task_id"].replace("/", "_").replace(":", "_")
-    matches = [p for p in (run_root / "tasks").iterdir() if p.is_dir() and slug in p.name] \
-        if (run_root / "tasks").is_dir() else []
+    tasks = run_root / "tasks"
+    candidates = [p for p in tasks.iterdir() if p.is_dir()] if tasks.is_dir() else []
+    # Prefer an exact name match. Substring matching alone let a sibling such as
+    # "<slug>-template-proof" shadow the real task tree.
+    exact = [p for p in candidates if p.name == slug]
+    partial = sorted(p for p in candidates if p.name != slug and slug in p.name)
+    matches = exact or partial
+    if len(matches) > 1:
+        raise AssertionError(
+            f"task_id {req['task_id']!r} is ambiguous under {tasks}: {[p.name for p in matches]}"
+        )
     if matches:
         task_dir = str(matches[0])
     else:

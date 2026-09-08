@@ -66,7 +66,12 @@ def build_task_tree(
         from .latex import compile_ground_truth_pdf
 
         references_bib = (materials_dir / "references.bib").read_text(encoding="utf-8")
-        proof_dir = task_dir.parent / f"{task_dir.name}-template-proof"
+        # Build scratch belongs under stages/, never beside the deliverables:
+        # a sibling of the task tree shows up as an extra "task" to anything that
+        # lists tasks/, and the acceptance worker resolves a task directory by
+        # substring, so "<slug>-template-proof" can shadow "<slug>".
+        proof_root = task_dir.parent.parent / "stages" / "conversion" / "ground-truth-proof"
+        proof_dir = proof_root / task_dir.name
         compiled = compile_ground_truth_pdf(ground_truth_tex, references_bib, proof_dir, "main", texmf_dir)
         ground_truth_pdf = compiled.get("pdf")
     if ground_truth_pdf is not None and ground_truth_pdf.is_file():

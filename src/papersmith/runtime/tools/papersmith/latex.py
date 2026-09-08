@@ -246,6 +246,34 @@ def normalize_tex(text: str) -> str:
     return text
 
 
+# A pathological source can make a LaTeX pass spin indefinitely. At batch scale
+# that is not a slow paper, it is a worker lost for the rest of the run, so every
+# pass is bounded and a timeout is reported as a normal compile failure: the
+# paper gets rejected and the shard moves on.
+COMPILE_TIMEOUT_SECONDS = int(os.environ.get("PAPERSMITH_COMPILE_TIMEOUT", "180"))
+
+
+def _run_compile(command: list[str], cwd: Path, env: dict) -> tuple[int, str, str]:
+    """Run one compile pass. Returns (returncode, stdout, stderr).
+
+    A timeout yields a non-zero code and a reason in stderr rather than an
+    exception, so callers keep their single failure path.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            env=env,
+            timeout=COMPILE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", f"compile pass exceeded {COMPILE_TIMEOUT_SECONDS}s: {' '.join(command)}"
+    return result.returncode, result.stdout, result.stderr
+
+
 def _compile_commands(name: str) -> list[list[str]]:
     return [
         ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape", f"{name}.tex"],
@@ -265,13 +293,13 @@ def compile_ground_truth_pdf(
     env = _tex_env(texmf_dir)
     log: list[str] = []
     for command in _compile_commands(name):
-        result = subprocess.run(command, cwd=out_dir, capture_output=True, text=True, errors="replace", env=env)
+        returncode, stdout, stderr = _run_compile(command, out_dir, env)
         if command[0] == "bibtex":
             continue
         log.append(" ".join(command))
-        if result.returncode != 0:
-            log.append(result.stdout[-2000:])
-            log.append(result.stderr[-2000:])
+        if returncode != 0:
+            log.append(stdout[-2000:])
+            log.append(stderr[-2000:])
             return {"ok": False, "log": "\n".join(log), "pdf": None}
     pdf = out_dir / f"{name}.pdf"
     ok = pdf.is_file() and pdf.stat().st_size > 0
@@ -287,13 +315,13 @@ def compile_template(
     env = _tex_env(texmf_dir)
     log: list[str] = []
     for command in _compile_commands("template"):
-        result = subprocess.run(command, cwd=out_dir, capture_output=True, text=True, errors="replace", env=env)
+        returncode, stdout, stderr = _run_compile(command, out_dir, env)
         if command[0] == "bibtex":
             continue
         log.append(" ".join(command))
-        if result.returncode != 0:
-            log.append(result.stdout[-2000:])
-            log.append(result.stderr[-2000:])
+        if returncode != 0:
+            log.append(stdout[-2000:])
+            log.append(stderr[-2000:])
             return {"ok": False, "log": "\n".join(log)}
     pdf = out_dir / "template.pdf"
     return {"ok": pdf.is_file() and pdf.stat().st_size > 0, "log": "\n".join(log)}
