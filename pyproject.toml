@@ -5,6 +5,9 @@ description = "Development tooling for the PaperSmith academic manuscript Agent"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+papersmith = "papersmith.runtime.tools.papersmith:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<9",

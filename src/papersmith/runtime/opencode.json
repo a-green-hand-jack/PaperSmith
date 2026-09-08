@@ -3,7 +3,7 @@
   "default_agent": "papersmith",
   "agent": {
     "papersmith": {
-      "description": "An initialized, backend-neutral PaperSmith scaffold.",
+      "description": "Scientific writing task-production definitions; controlled production is not yet implemented.",
       "prompt": "{file:./identity.md}",
       "tools": {
         "skill": true
@@ -11,7 +11,7 @@
     }
   },
   "skills": ["./skills"],
-  "instructions": ["./knowledge/*.md", "./workflows/*.md"],
+  "instructions": ["./memory-policy.md", "./knowledge/*.md", "./workflows/*.md"],
   "share": "disabled",
   "autoupdate": false
 }

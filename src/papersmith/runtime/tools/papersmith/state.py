@@ -1,0 +1,105 @@
+"""Run workspace state: layout, lock, run.json and append-only events."""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .config import RequestSpec
+from .integrity import hash_json
+
+STAGE_DIRS = ["proposal", "gate1", "materials", "gate2", "conversion", "gate3"]
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class RunLocked(RuntimeError):
+    pass
+
+
+class RunState:
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.data: dict = {}
+        self._lock_fd: int | None = None
+
+    # -- creation / loading -------------------------------------------------
+    @classmethod
+    def create(cls, root: Path, spec: RequestSpec) -> "RunState":
+        root = root.resolve()
+        if root.exists() and any(root.iterdir()):
+            raise RuntimeError(f"output directory is non-empty: {root}")
+        root.mkdir(parents=True, exist_ok=True)
+        for name in STAGE_DIRS:
+            (root / "stages" / name).mkdir(parents=True, exist_ok=True)
+        (root / "inputs").mkdir(parents=True, exist_ok=True)
+        (root / "acceptance").mkdir(parents=True, exist_ok=True)
+        (root / "tasks").mkdir(parents=True, exist_ok=True)
+        state = cls(root)
+        state.data = {
+            "version": 1,
+            "agent": "papersmith",
+            "status": "running",
+            "phase": "parse-request",
+            "created_at": utcnow(),
+            "request": spec.to_dict(),
+            "request_hash": hash_json(spec.to_dict()),
+            "blocking_reason": None,
+        }
+        state.save()
+        state.append_event("run_created", phase="parse-request", status="running")
+        return state
+
+    @classmethod
+    def load(cls, root: Path) -> "RunState":
+        root = root.resolve()
+        run_json = root / "run.json"
+        if not run_json.is_file():
+            raise RuntimeError(f"run not found: {root}")
+        state = cls(root)
+        state.data = json.loads(run_json.read_text(encoding="utf-8"))
+        return state
+
+    # -- lock ---------------------------------------------------------------
+    def acquire_lock(self) -> None:
+        lock = self.root / ".lock"
+        try:
+            self._lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(self._lock_fd, f"{os.getpid()}\n".encode())
+        except FileExistsError:
+            raise RunLocked(f"run is already locked: {self.root}")
+
+    def release_lock(self) -> None:
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)
+            self._lock_fd = None
+            (self.root / ".lock").unlink(missing_ok=True)
+
+    # -- persistence --------------------------------------------------------
+    def save(self) -> None:
+        path = self.root / "run.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+    def append_event(self, kind: str, **data: object) -> None:
+        record = {"time": utcnow(), "event": kind, **data}
+        with (self.root / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # -- stages -------------------------------------------------------------
+    def stage_dir(self, name: str) -> Path:
+        if name not in STAGE_DIRS:
+            raise ValueError(f"unknown stage: {name}")
+        return self.root / "stages" / name
+
+    def record_stage(self, name: str, result: dict) -> None:
+        result = {"recorded_at": utcnow(), **result}
+        path = self.stage_dir(name) / "manifest.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        self.append_event("stage_recorded", stage=name, status=result.get("status"))

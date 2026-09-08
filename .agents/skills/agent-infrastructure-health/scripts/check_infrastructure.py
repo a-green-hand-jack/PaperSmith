@@ -47,7 +47,7 @@ def main() -> int:
     if not args.skip_build:
         ok = run("docker-build", ["docker", "build", "--build-arg", f"AGENT_NAME={args.agent}", "-t", image, "-f", "docker/Dockerfile", "."]) and ok
     smoke = "; ".join([
-        "set -eu", "command -v opencode", "command -v codex", "command -v claude",
+        "set -eu", "command -v opencode", "command -v codex", "command -v claude", "command -v pi",
         f"{args.agent} --help >/dev/null", f"{args.agent} --version >/dev/null",
         "test -z \"$(find /opt/install -name AGENTS.md -print -quit)\"",
         f"test ! -d /opt/install/lib/{args.agent}/agent-definition/.agents",

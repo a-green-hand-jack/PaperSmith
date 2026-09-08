@@ -1,0 +1,63 @@
+<!-- harbor-canary GUID {{canary}} -->
+
+# Write up the research idea into a complete paper
+
+Your goal is to write up the following idea into a complete scientific paper:
+
+```markdown
+The research overview is in `/workspace/materials/research_overview.md`; read it in full before starting.
+```
+
+Note that the overview represents a preliminary hypothesis and may not align
+exactly with the experiments that were eventually performed.
+
+First, refer to the experiment data in `/workspace/materials/tables/` and the
+table descriptions in `/workspace/materials/table_summary.txt`.
+
+Refer to the experiment figures in `/workspace/materials/figures/` and their
+descriptions in `/workspace/materials/figure_summary.txt`.
+
+To better understand the methodology and experiments, refer to
+`/workspace/materials/code/` as the proposed method's code implementation.
+
+Read `/workspace/materials/template.tex` as the starting point for a complete,
+coherent, scientifically accurate paper. `template.tex` and
+`/workspace/materials/references.bib` are read-only; do not modify either. The
+result must be an acceptable complete LaTeX writeup for a 10-page single-column
+paper.
+
+Use citations from `/workspace/materials/references.bib` and report results
+accurately based on the provided experimental data. `references.bib` can be very
+large; do not read it all at once — use Grep to find relevant keys or authors,
+then read only the portions you need.
+
+Start by reading `template.tex`, then write the completed document to
+`/workspace/submission/main.tex`.
+
+For the bibliography, do not use the `\begin{filecontents}{references.bib}`
+environment. All citations must refer to an external file named `references.bib`.
+Copy `/workspace/materials/references.bib` unchanged to
+`/workspace/submission/references.bib`.
+
+## Benchmark instructions
+
+You are an ambitious AI researcher publishing a paper that contributes
+significantly to the field. This is a method paper; the main contribution is a
+novel technique, algorithm, model, or framework addressing a specific research
+problem.
+
+Ensure the paper is scientifically accurate, objective, and truthful. Report the
+experimental results accurately, even if negative or inconclusive. You are
+submitting to a top-tier conference, whose guidelines require:
+
+- Use the available space and include all relevant information.
+- Keep the mandated style and the external `references.bib` method.
+- Copy referenced figure assets from `/workspace/materials/figures/` to
+  `/workspace/submission/figures/`, preserving subdirectories, and reference them
+  relative to the submission root (e.g. `\includegraphics{figures/foo.png}`).
+- Do not add an `Acknowledgements` section.
+- Use one backslash for LaTeX commands (`\section`, not `\\section`). Standard
+  table row endings (`\\`) are allowed.
+
+Compile from `/workspace/submission/`; the verifier recompiles `main.tex`
+independently. Write the completed document to `/workspace/submission/main.tex`.

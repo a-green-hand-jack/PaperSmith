@@ -1,0 +1,84 @@
+%% PaperSmith workflow — deterministic pipeline, task tree, and run workspace.
+%% Renders on GitHub/HuggingFace when embedded in a markdown ```mermaid block.
+%% Source of truth for the diagrams in README.md.
+
+%% ---------------------------------------------------------------------------
+%% 1. Create pipeline (fixed selection)
+%% ---------------------------------------------------------------------------
+flowchart TD
+    CMD["papersmith create<br/>--selection fixed --paper ARXIV"] --> S0["parse request → RequestSpec"]
+    S0 --> S1["resolve_identifier + fetch_arxiv_source"]
+    S1 --> S2["find_main_tex + probe_reducibility"]
+    S2 -->|reducible| S3["derive_template + extract_references<br/>+ extract_style_files"]
+    S2 -->|not reducible| REJ["paper_rejected<br/>(BlockedError)"]
+    S3 --> S4["compile_template (proof)"]
+    S4 --> S5["extract_figures + extract_tables"]
+    S5 --> S6["model session (read-only)<br/>research overview + figure/table descriptions<br/>retry ×3 on validation failure"]
+    S6 --> S7["assemble_materials → environment/materials/"]
+    S7 --> S8["compile_ground_truth_pdf"]
+    S8 --> S9["build_task_tree + validate_task_tree"]
+    S9 --> S10["gate1: source integrity"]
+    S10 --> S11["gate2: material sufficiency"]
+    S11 --> S12["gate3: task-tree conformance"]
+    S12 --> S13["write acceptance request"]
+    S13 --> S14["host worker: real Harbor oracle + nop trials"]
+    S14 --> S15["oracle = 1.0, nop = 0.0"]
+    S15 --> S16["papersmith validate → delivery.json"]
+    S16 --> S17["publish (HF upload)"]
+
+%% ---------------------------------------------------------------------------
+%% 2. Task tree (what a delivered task contains)
+%% ---------------------------------------------------------------------------
+flowchart TD
+    T["tasks/&lt;slug&gt;/"] --> TOML["task.toml"]
+    T --> INS["instruction.md"]
+    T --> ENV["environment/"]
+    ENV --> MAT["materials/"]
+    MAT --> ROV["research_overview.md"]
+    MAT --> BIB["references.bib"]
+    MAT --> TPL["template.tex"]
+    MAT --> FSU["figure_summary.txt"]
+    MAT --> TSU["table_summary.txt"]
+    MAT --> TINV["table_inventory.json"]
+    MAT --> AGB["AGENTS.md"]
+    MAT --> FIG["figures/"]
+    MAT --> TAB["tables/"]
+    MAT --> CODE["code/"]
+    ENV --> TEXMF["texmf/"]
+    T --> SOL["solution/"]
+    SOL --> SSH["solve.sh"]
+    SOL --> NORM["normalize.py"]
+    SOL --> SPRIV["private/"]
+    SPRIV --> MTEX["main.tex"]
+    SPRIV --> MPDF["main.pdf"]
+    SPRIV --> CFG["config.yaml"]
+    T --> TST["tests/"]
+    TST --> TSH["test.sh"]
+    TST --> TPY["test_state.py"]
+    TST --> GRD["grader_pwb.py"]
+    TST --> TEXMF2["texmf/"]
+    TST --> TPRIV["private/"]
+    TPRIV --> GT["ground_truth.tex"]
+    TPRIV --> ROL["research_overview_long.md"]
+    TPRIV --> SM["source_manifest.json"]
+    TPRIV --> GTS["ground_truth_sources/"]
+
+%% ---------------------------------------------------------------------------
+%% 3. Run workspace (evidence written per run)
+%% ---------------------------------------------------------------------------
+flowchart TD
+    RUN["run workspace"] --> RJ["run.json"]
+    RUN --> EV["events.jsonl"]
+    RUN --> IN["inputs/request.json"]
+    RUN --> ST["stages/"]
+    ST --> PRO["proposal/"]
+    ST --> G1["gate1/"]
+    ST --> MAT2["materials/"]
+    ST --> G2["gate2/"]
+    ST --> CONV["conversion/"]
+    ST --> G3["gate3/"]
+    RUN --> ACC["acceptance/"]
+    ACC --> REQ["&lt;slug&gt;-request.json"]
+    ACC --> RCT["receipt.json"]
+    RUN --> TASKS["tasks/&lt;slug&gt;/"]
+    RUN --> DEL["delivery.json"]

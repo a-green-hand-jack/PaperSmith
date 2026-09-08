@@ -11,3 +11,5 @@ node_modules/
 outputs/
 work/
 release/
+__pycache__/
+*.pyc
