@@ -60,12 +60,20 @@ mkdir -p "$jobs_dir"
 receipt_path="$(dirname "$request")/$(basename "$request" | sed 's/-request\.json$/-receipt.json/')"
 # Check we can actually write the receipt BEFORE paying for two Harbor trials.
 # A run directory created inside the container is owned by root, so a host
-# worker silently loses the evidence at the very end without this.
-if ! : >>"$receipt_path" 2>/dev/null; then
+# worker otherwise loses the evidence at the very end.
+#
+# Probe the directory, never the receipt itself: creating the file here would
+# leave an empty receipt behind on failure, and an empty receipt reads as
+# "already accepted" to every skip check downstream.
+receipt_dir="$(dirname "$receipt_path")"
+writable=true
+[[ -d "$receipt_dir" && -w "$receipt_dir" ]] || writable=false
+[[ ! -e "$receipt_path" || -w "$receipt_path" ]] || writable=false
+if [[ "$writable" != true ]]; then
   echo "cannot write the receipt: $receipt_path" >&2
   echo "the run directory is probably owned by another user (the control container runs as root)." >&2
   echo "fix ownership first, e.g.:" >&2
-  echo "  docker run --rm --entrypoint chmod -v \"\$(dirname \"$(dirname "$request")\"):/run\" <image> -R a+rwX /run" >&2
+  echo "  docker run --rm --entrypoint chmod -v \"<run-dir>:/run\" <image> -R a+rwX /run" >&2
   exit 2
 fi
 

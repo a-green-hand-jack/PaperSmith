@@ -36,7 +36,7 @@ failed=0
 for request in "${requests[@]}"; do
   slug="$(basename "$request" | sed 's/-request\.json$//')"
   receipt="${request/-request.json/-receipt.json}"
-  if [[ -f "$receipt" ]]; then
+  if [[ -s "$receipt" ]]; then
     echo "--- $slug already has a receipt; skipping (a trial is not re-run) ---"
     continue
   fi

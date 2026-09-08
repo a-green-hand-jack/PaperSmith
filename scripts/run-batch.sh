@@ -183,7 +183,8 @@ if [[ "$stage" == all || "$stage" == accept ]]; then
   requests=()
   while IFS= read -r request; do
     receipt="${request/-request.json/-receipt.json}"
-    [[ -f "$receipt" ]] && continue   # already accepted; never re-run a paid trial
+    # -s, not -f: a zero-byte receipt is not evidence of acceptance.
+    [[ -s "$receipt" ]] && continue   # already accepted; never re-run a paid trial
     requests+=("$request")
   done < <(find "$run_root" -path '*/acceptance/*-request.json' -type f | sort)
 
