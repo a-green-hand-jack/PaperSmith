@@ -57,6 +57,18 @@ task_slug="$(printf '%s' "$task_id" | tr -c 'A-Za-z0-9._-' '_')"
 jobs_dir="$jobs_root/$task_slug"
 mkdir -p "$jobs_dir"
 
+receipt_path="$(dirname "$request")/$(basename "$request" | sed 's/-request\.json$/-receipt.json/')"
+# Check we can actually write the receipt BEFORE paying for two Harbor trials.
+# A run directory created inside the container is owned by root, so a host
+# worker silently loses the evidence at the very end without this.
+if ! : >>"$receipt_path" 2>/dev/null; then
+  echo "cannot write the receipt: $receipt_path" >&2
+  echo "the run directory is probably owned by another user (the control container runs as root)." >&2
+  echo "fix ownership first, e.g.:" >&2
+  echo "  docker run --rm --entrypoint chmod -v \"\$(dirname \"$(dirname "$request")\"):/run\" <image> -R a+rwX /run" >&2
+  exit 2
+fi
+
 run_trial() {
   local label="$1"
   local out="$jobs_dir/$label"
@@ -94,7 +106,6 @@ nop_out="$(run_trial nop)"
 read -r oracle_reward oracle_trial oracle_status <<<"$oracle_out"
 read -r nop_reward nop_trial nop_status <<<"$nop_out"
 
-receipt_path="$(dirname "$request")/$(basename "$request" | sed 's/-request\.json$/-receipt.json/')"
 python3 - "$receipt_path" "$request_hash" "$task_id" "$oracle_reward" "$oracle_trial" "$oracle_status" "$nop_reward" "$nop_trial" "$nop_status" <<'PY'
 import json, sys
 receipt_path, request_hash, task_id = sys.argv[1], sys.argv[2], sys.argv[3]

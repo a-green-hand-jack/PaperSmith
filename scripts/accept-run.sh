@@ -25,11 +25,31 @@ if [[ ${#requests[@]} -eq 0 ]]; then
 fi
 
 echo "=== acceptance: ${#requests[@]} task(s) ==="
+# The control container runs as root, so a run directory it created is not
+# writable by this host worker. Normalise ownership BEFORE the trials, not after:
+# the receipt is written at the end, and discovering the problem there means two
+# Harbor trials were paid for and their evidence lost.
+docker run --rm --entrypoint chmod -v "$run_dir:/tmp/run" "$image" -R a+rwX /tmp/run >/dev/null
+
+accepted=0
+failed=0
 for request in "${requests[@]}"; do
   slug="$(basename "$request" | sed 's/-request\.json$//')"
+  receipt="${request/-request.json/-receipt.json}"
+  if [[ -f "$receipt" ]]; then
+    echo "--- $slug already has a receipt; skipping (a trial is not re-run) ---"
+    continue
+  fi
   echo "--- accepting $slug ---"
-  HARBOR_JOBS_DIR="${HARBOR_JOBS_DIR:-/tmp/papersmith-acceptance-jobs}" "$worker" "$request"
+  if HARBOR_JOBS_DIR="${HARBOR_JOBS_DIR:-/tmp/papersmith-acceptance-jobs}" "$worker" "$request"; then
+    accepted=$((accepted + 1))
+  else
+    # One task failing must not abandon the rest of the batch.
+    failed=$((failed + 1))
+    echo "--- $slug acceptance failed ---" >&2
+  fi
 done
+echo "acceptance finished: $accepted succeeded, $failed failed"
 
 echo "=== validate (assembles delivery.json) ==="
 docker run --rm --entrypoint chmod -v "$run_dir:/tmp/run" "$image" -R a+rwX /tmp/run >/dev/null

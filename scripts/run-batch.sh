@@ -177,6 +177,9 @@ fi
 # --------------------------------------------------------------------------
 if [[ "$stage" == all || "$stage" == accept ]]; then
   echo "=== accept: real Harbor trials, $accept_jobs at a time ==="
+  # Run directories are created by the control container as root; the host
+  # worker must be able to write its receipt before any trial is paid for.
+  docker run --rm --entrypoint chmod -v "$run_root:/batch" "$image" -R a+rwX /batch >/dev/null 2>&1 || true
   requests=()
   while IFS= read -r request; do
     receipt="${request/-request.json/-receipt.json}"
