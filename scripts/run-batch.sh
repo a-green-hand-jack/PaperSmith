@@ -34,6 +34,7 @@ Options:
   --accept-jobs N   Concurrent Harbor acceptance workers (default 2).
   --stage STAGE     create | accept | report | all (default all).
   --resume          Continue existing run directories instead of recreating them.
+  --no-build        Reuse the existing image instead of rebuilding it.
   -h, --help        Show this help.
 
 Environment: LLM_PROVIDER, LLM_MODEL, LLM_REVIEW_MODEL are injected at run time
@@ -48,6 +49,7 @@ account=""
 accept_jobs=2
 stage="all"
 resume=false
+no_build=false
 
 while (($#)); do
   case "$1" in
@@ -58,6 +60,7 @@ while (($#)); do
     --accept-jobs) accept_jobs="${2:?missing value for --accept-jobs}"; shift 2 ;;
     --stage) stage="${2:?missing value for --stage}"; shift 2 ;;
     --resume) resume=true; shift ;;
+    --no-build) no_build=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -84,6 +87,18 @@ for entry in $shards_spec; do
   done
 done
 echo "batch plan: ${#shard_plan[@]} shard(s), target $count task(s) each, provider=$provider model=$model"
+
+if [[ "$no_build" != true ]]; then
+  echo "building $image"
+  docker build --build-arg AGENT_NAME=papersmith -t "$image" -f docker/Dockerfile . >/tmp/papersmith-batch-build.log 2>&1 \
+    || { echo "image build failed; see /tmp/papersmith-batch-build.log" >&2; exit 1; }
+fi
+# Fail fast on a stale image rather than discovering it once per shard: every
+# worker would fail identically after the containers were already started.
+if ! docker run --rm --entrypoint papersmith-cli "$image" create --help 2>&1 | grep -q -- '--shard'; then
+  echo "image $image predates --shard/--ledger; rebuild it (drop --no-build)" >&2
+  exit 2
+fi
 
 # --------------------------------------------------------------------------
 # Credentials and the pi provider catalog. The catalog carries only a variable
@@ -113,7 +128,7 @@ PY
 fi
 
 run_dir_for() {  # domain, shard -> path
-  printf '%s/%s-%s' "$run_root" "$1" "$(printf '%s' "$2" | tr '/' 'of')"
+  printf '%s/%s-%s' "$run_root" "$1" "${2//\//of}"
 }
 
 # --------------------------------------------------------------------------
