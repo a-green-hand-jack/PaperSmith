@@ -124,11 +124,16 @@ git diff --check
 
 | 项 | 状态 |
 | --- | --- |
-| 增量 `resume` | stub：只校验请求哈希，不复用已有证据。批量场景的首要阻塞项 |
-| 运行锁 | `O_CREAT\|O_EXCL` 且只在优雅退出时删除；进程被 kill 后 `.lock` 残留，该 run 再也进不去 |
-| `domain_profile()` | 未知 domain 静默退回 `biology`，会默默产出错领域的 task；`DOMAIN_PROFILES` 目前只有 biology/physics |
-| 验收 worker 并发 | `HARBOR_JOBS_DIR` 默认固定共享路径且每次 `rm -rf`，并发验收互相清作业目录 |
-| 验收 receipt | `exit_status` 硬编码 0，从未真实观测——与「绝不伪造回执」的规则冲突 |
-| 发现层 | 仅 arXiv，收录有领域偏好（生化优质期刊基本不在其上）；多平台发现层待接入 |
+| 发现层 | 仅 arXiv。arXiv 收录本身有领域偏好（生化优质期刊基本不在其上），多平台发现层（OpenAlex/Crossref 提供分类与 license，取源仍限能拿到 LaTeX 的平台）待接入 |
 | 组件层 pi-native | 后端已 pi-only，但编排仍在 Python 侧（agent 循环、会话、provider 调用、人格文本），尚未按 pi 组件契约上移到 skill/extension |
+| 任务 ID 分配 | publish 阶段尚未在锁下分配 `<prefix>-NNNN`，多进程并行发布会撞号 |
 | 表格 VLM 描述 | 需要具备视觉的 provider；当前 provider 下的 kimi 均不支持图像输入 |
+| Bohrium LKM 深度增强 | 已确认 LKM 不适合做发现（无 arXiv ID、无 license、无分类过滤），用于已选定论文的深度增强尚未接入 |
+
+### pi 契约要求记录的后端能力缺口
+
+- pi 无 `--max-turns` → 轮次预算不可强制，只能声明，不得在 Python 里模拟。
+- pi 无持久 run store（会话是 transcript，契约禁止当产品数据库）→ 分阶段、可锁、哈希绑定的 run 目录无对应原语；它是产品数据，不属于组件层级。
+- `pi.events` 仅进程内 → 跨进程控制器无受支持的门。
+- pi 无 `--timeout` → 超时归调用方，现有 `subprocess.run(timeout=300)` 是正确位置。
+- 双前门 launcher（pi + 确定性 CLI 子命令）是 PaperSmith 特有设计，参考仓库无对应形态。

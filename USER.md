@@ -66,7 +66,7 @@ papersmith create '基于指定论文制作完整科研论文写作任务' \
 关键点：
 
 - `--selection fixed` + `--paper <arXiv/DOI/URL>`：论文被判定不可还原（`paper_rejected`）时阻塞，不擅自换题。
-- `--selection discovery` + `--domain`：按领域从 arXiv 发现候选并逐个尝试，直到达到 `--count`。当前候选池仍限 arXiv。
+- `--selection discovery` + `--domain`：按领域从 arXiv 发现候选并逐个尝试，直到达到 `--count`。可加 `--shard i/N` 取一段互不相交的投稿时间窗，`--ledger DIR` 与其他并行进程共享去重账本。当前候选池仍限 arXiv。
 - `--count N`：目标最终交付任务数。
 - `--output`：必须是空目录或不存在。
 - `--source <目录>`：额外授权读取的本地目录（不授权父目录）。
@@ -75,7 +75,7 @@ papersmith create '基于指定论文制作完整科研论文写作任务' \
 
 ```bash
 papersmith status   /tmp/run     # 只读 run.json 与各阶段 manifest 状态
-papersmith resume   /tmp/run     # 校验请求快照后重跑（增量复用尚未实现）
+papersmith resume   /tmp/run     # 增量续跑：跳过已完成论文，复用已下载源码包
 papersmith validate /tmp/run     # 校验回执并组装 delivery.json
 ```
 
@@ -104,6 +104,30 @@ docker/run-acceptance-worker.sh <acceptance-request.json>
 该 worker 依次跑 oracle（期望 `reward=1.0`）与 nop（期望 `reward=0.0`），把只读 `receipt.json` 写回运行目录。之后运行 `papersmith validate` 组装 delivery。
 
 批量场景用 `scripts/accept-run.sh <run-dir>` 遍历一个运行目录下所有待验收请求。
+
+## 8b. 并行批量产线
+
+```bash
+LLM_PROVIDER=gravarc-router LLM_MODEL=kimi-k3 \
+  scripts/run-batch.sh --shards "biology:3 physics:4 computer-science:2 mathematics:1" \
+                       --count 10 --accept-jobs 2
+```
+
+三个阶段可单独重跑（`--stage create|accept|report`）：
+
+- **create** 按 `--shards` 并行起容器，每个分片一个领域 + 一段互不相交的投稿时间窗；共享 ledger 让跨领域重复的论文只被建一次。
+- **accept** 在宿主机按 `--accept-jobs` 有界并行跑真实 Harbor 试跑。每个任务是两次含 LaTeX 编译的容器运行，**不能**按 create 的宽度并发。已有回执的任务会跳过，不重复付费试跑。
+- **report** 输出人工评审面（见下）。
+
+中断后加 `--resume` 继续：已完成的论文、已下载的源码包都会复用，不重下不重编。
+
+## 8c. 人工评审面
+
+```bash
+python3 scripts/batch-report.py --runs /tmp/papersmith-batch --ledger /tmp/papersmith-batch/ledger
+```
+
+每个任务一行：论文、领域、三道 gate 结论、研究概述字数、图/表/引用数量、以及真实 oracle/nop 值；批次末尾给出产率与按拒绝原因分桶的统计。它**不计算质量分、不给录用建议**——质量由你看任务本身判断，脚本只提供事实。
 
 ## 9. 发布
 

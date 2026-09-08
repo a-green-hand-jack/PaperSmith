@@ -103,6 +103,8 @@ def cmd_resume(args) -> int:
     args.provider = os.environ.get("LLM_PROVIDER") or spec.provider
     args.model = os.environ.get("LLM_MODEL") or spec.model
     args.review_model = os.environ.get("LLM_REVIEW_MODEL") or spec.review_model or args.model
+    args.shard = getattr(args, "shard", None)
+    args.ledger = getattr(args, "ledger", None)
     try:
         if spec.selection == "fixed":
             result = run_fixed(state.root, spec, args, resume=True)
@@ -207,6 +209,14 @@ def main(argv=None) -> int:
         default=os.environ.get("LLM_REVIEW_MODEL") or os.environ.get("LLM_MODEL") or None,
     )
     create.add_argument("--domain", choices=sorted(DOMAIN_PROFILES), default="biology")
+    create.add_argument(
+        "--shard",
+        help="restrict discovery to one disjoint submission window, as 'i/N'",
+    )
+    create.add_argument(
+        "--ledger",
+        help="shared batch ledger directory (default: $PAPERSMITH_LEDGER_DIR)",
+    )
     create.add_argument("--describe", action="store_true")
     create.set_defaults(fn=cmd_create)
 
@@ -219,6 +229,8 @@ def main(argv=None) -> int:
 
     resume = sub.add_parser("resume")
     resume.add_argument("output", type=Path)
+    resume.add_argument("--shard")
+    resume.add_argument("--ledger")
     resume.set_defaults(fn=cmd_resume)
 
     validate = sub.add_parser("validate")

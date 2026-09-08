@@ -16,6 +16,7 @@ from .backends import DEFAULT_BACKEND, extract_json, run_phase
 from .config import domain_profile
 from .conversion import build_source_manifest, build_task_tree
 from .contract import validate_task_tree
+from .ledger import ledger_dir, load_excluded, record_rejected, record_used
 from .materials import assemble_materials, build_materials_prompt, validate_materials_output
 from .review import run_gate
 from .sources import BlockedError, discover_candidates, fetch_arxiv_source, resolve_identifier
@@ -117,10 +118,16 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
     try:
         profile = domain_profile(spec.domain)
         ledger = run_ledger(state) if resume else {"completed": {}, "rejected": {}}
-        # Papers already built or already rejected must not be paid for twice.
-        seen = set(ledger["completed"]) | set(ledger["rejected"])
-        candidates = discover_candidates(profile["arxiv_categories"], spec.count)
-        candidates = [c for c in candidates if c not in seen and f"arXiv:{c}" not in seen]
+        # Papers already built or already rejected must not be paid for twice,
+        # by this run or by any sibling worker sharing the batch ledger.
+        shared = ledger_dir(getattr(args, "ledger", None))
+        seen = set(ledger["completed"]) | set(ledger["rejected"]) | load_excluded(shared)
+        candidates = discover_candidates(
+            profile["arxiv_categories"],
+            spec.count,
+            shard=getattr(args, "shard", None),
+            exclude=seen,
+        )
         if not candidates and len(ledger["completed"]) < spec.count:
             raise BlockedError("proposal", "arXiv discovery returned no unseen candidates")
         state.append_event(
@@ -149,9 +156,11 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
                 summary = _build_one(state, spec, args, identifier)
                 task_summaries.append(summary)
                 state.append_event("task_built", paper=identifier, count=len(task_summaries))
+                record_used(shared, identifier, summary.get("task_dir", ""), spec.domain)
             except BlockedError as exc:
                 errors.append({"paper": identifier, "reason": exc.reason})
                 state.append_event("paper_rejected", paper=identifier, reason=exc.reason)
+                record_rejected(shared, identifier, exc.reason, spec.domain)
 
         ok = len(task_summaries) >= spec.count
         state.data["status"] = "blocked"
@@ -169,6 +178,7 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
             "domain": spec.domain,
             "target": spec.count,
             "candidates_considered": considered,
+            "shard": getattr(args, "shard", None),
             "reused": reused,
             "tasks": task_summaries,
             "errors": errors,

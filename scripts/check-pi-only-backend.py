@@ -69,6 +69,7 @@ DEVELOPMENT_ALLOWLIST = {
     "AGENTS.md": "names the coding agents this repository may be developed WITH, not product backends",
     "DEV.md": "developer guide; records the pi-only product contract and what it replaced",
     ".opencode/opencode.jsonc": "configuration for the development harness, not the product",
+    "scripts/check-pi-only-backend.py": "this gate names the patterns it forbids",
 }
 
 # Positive facts the pi-only contract must keep.

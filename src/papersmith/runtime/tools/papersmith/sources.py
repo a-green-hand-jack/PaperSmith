@@ -15,6 +15,8 @@ import io
 import json
 import os
 import re
+import time
+from datetime import datetime, timedelta, timezone
 import shutil
 import subprocess
 import tarfile
@@ -24,6 +26,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ARXIV_API = "http://export.arxiv.org/api/query"
+# arXiv asks for roughly one request every three seconds. A batch with ten
+# parallel workers will be throttled without an explicit pause between pages.
+ARXIV_PAGE_DELAY_SECONDS = 3.0
 CROSSREF_API = "https://api.crossref.org/works"
 PDF_MAX_BYTES = 64 * 1024 * 1024
 SOURCE_MAX_BYTES = 256 * 1024 * 1024
@@ -201,27 +206,84 @@ def _arxiv_abs_license(arxiv_id: str) -> str | None:
     return match.group(1) if match else None
 
 
-def discover_candidates(categories: list[str], count: int, margin: int = 8) -> list[str]:
-    """Query arXiv for recent papers across categories; return bare arXiv IDs."""
+def _shard_window(shard: str | None, lookback_days: int) -> tuple[str, str] | None:
+    """Split the lookback period into disjoint submission windows.
+
+    Sharding by date rather than by category is what lets N parallel workers
+    share one domain without overlapping: the windows partition the period by
+    construction, whatever the category count happens to be.
+    """
+    if not shard:
+        return None
+    try:
+        index_text, total_text = shard.split("/", 1)
+        index, total = int(index_text), int(total_text)
+    except ValueError:
+        raise BlockedError("proposal", f"invalid shard: {shard!r} (expected 'i/N')") from None
+    if total < 1 or not (1 <= index <= total):
+        raise BlockedError("proposal", f"shard out of range: {shard!r} (expected 1 <= i <= N)")
+    now = datetime.now(timezone.utc)
+    span = timedelta(days=lookback_days) / total
+    end = now - span * (index - 1)
+    start = end - span
+    return start.strftime("%Y%m%d%H%M"), end.strftime("%Y%m%d%H%M")
+
+
+def discover_candidates(
+    categories: list[str],
+    count: int,
+    margin: int = 8,
+    shard: str | None = None,
+    exclude: set[str] | None = None,
+    lookback_days: int = 365,
+    page_size: int = 200,
+    max_pages: int = 25,
+) -> list[str]:
+    """Query arXiv for papers across categories; return bare arXiv IDs.
+
+    Pages through the API rather than taking one recent-N slice, so a batch
+    that needs hundreds of candidates is not restricted to whatever was posted
+    in the last few days. `shard` restricts the query to one disjoint
+    submission window; `exclude` drops identifiers a previous run already used
+    or rejected.
+    """
     if not categories:
         raise BlockedError("proposal", "no arXiv categories configured for discovery")
+    exclude = exclude or set()
     query = "+OR+".join(f"cat:{c}" for c in categories)
-    url = (
-        f"{ARXIV_API}?search_query={query}"
-        f"&start=0&max_results={max(count * margin, 10)}"
-        f"&sortBy=submittedDate&sortOrder=descending"
-    )
-    xml = _http_get(url, timeout=60)
+    window = _shard_window(shard, lookback_days)
+    if window:
+        query = f"%28{query}%29+AND+submittedDate:%5B{window[0]}+TO+{window[1]}%5D"
+    wanted = max(count * margin, 10)
     ns = {"a": "http://www.w3.org/2005/Atom"}
-    root = ET.fromstring(xml)
     ids: list[str] = []
-    for entry in root.findall("a:entry", ns):
-        eid = entry.findtext("a:id", default="", namespaces=ns) or ""
-        arxiv_id = eid.rsplit("/abs/", 1)[-1]
-        arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
-        if re.match(r"^\d{4}\.\d{4,5}$", arxiv_id) and arxiv_id not in ids:
+    seen: set[str] = set()
+    for page in range(max_pages):
+        start = page * page_size
+        url = (
+            f"{ARXIV_API}?search_query={query}"
+            f"&start={start}&max_results={page_size}"
+            f"&sortBy=submittedDate&sortOrder=descending"
+        )
+        xml = _http_get(url, timeout=60)
+        entries = ET.fromstring(xml).findall("a:entry", ns)
+        if not entries:
+            break
+        for entry in entries:
+            eid = entry.findtext("a:id", default="", namespaces=ns) or ""
+            arxiv_id = re.sub(r"v\d+$", "", eid.rsplit("/abs/", 1)[-1])
+            if not re.match(r"^\d{4}\.\d{4,5}$", arxiv_id) or arxiv_id in seen:
+                continue
+            seen.add(arxiv_id)
+            if arxiv_id in exclude or f"arXiv:{arxiv_id}" in exclude:
+                continue
             ids.append(arxiv_id)
-    return ids
+        if len(ids) >= wanted or len(entries) < page_size:
+            break
+        # arXiv asks for roughly one request every three seconds; a batch with
+        # ten workers will be throttled without this.
+        time.sleep(ARXIV_PAGE_DELAY_SECONDS)
+    return ids[:wanted]
 
 
 def resolve_arxiv(identifier: str) -> dict:
