@@ -484,8 +484,24 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
 
     all_pass = all((gates[g].get("decision") or {}).get("decision") == "pass" for g in ("gate1", "gate2", "gate3"))
 
-    # 6. acceptance request — always written; gates are recorded as evidence and the
-    #    real Harbor oracle/nop trials are the authoritative acceptance gate.
+    # 6. acceptance request. The real Harbor oracle/nop trials remain the only
+    #    authoritative acceptance signal, and gate verdicts are never allowed to
+    #    stand in for them -- a task whose gates all rejected has passed real
+    #    acceptance before now.
+    #
+    #    A task that fails the 30-path contract is different: it cannot pass. The
+    #    grader recompiles main.tex, and a task with no ground-truth PDF has
+    #    nothing for it to check, so sending it costs two container runs with a
+    #    LaTeX compile each to learn what validation already knows. Reject it
+    #    here, naming the missing paths, instead of paying to be told.
+    if not tree["valid"]:
+        faults = [f"missing {p}" for p in (tree.get("missing") or [])]
+        faults += list(tree.get("issues") or [])
+        raise BlockedError(
+            "conversion",
+            "task tree incomplete, not sent for acceptance: " + "; ".join(faults),
+        )
+
     manifest = json.loads((task_dir / "manifest.json").read_text(encoding="utf-8")) if (task_dir / "manifest.json").is_file() else {}
     request = build_acceptance_request(identifier, task_dir, manifest, {"main_pdf": ground_truth_pdf is not None})
     write_acceptance_request(state.root / "acceptance" / f"{slug}-request.json", request)
