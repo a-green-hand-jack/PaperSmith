@@ -50,6 +50,7 @@ accept_jobs=2
 stage="all"
 resume=false
 no_build=false
+SHARD_START_STAGGER_SECONDS="${SHARD_START_STAGGER_SECONDS:-8}"
 
 while (($#)); do
   case "$1" in
@@ -180,10 +181,14 @@ create_shard() {
 if [[ "$stage" == all || "$stage" == create ]]; then
   echo "=== create: ${#shard_plan[@]} shard(s) in parallel ==="
   pids=()
+  stagger=0
   for assignment in "${shard_plan[@]}"; do
     read -r domain shard <<<"$assignment"
-    create_shard "$domain" "$shard" &
+    # Stagger the starts: every shard opening its discovery query in the same
+    # instant is what earns an HTTP 429 from arXiv.
+    ( sleep "$stagger"; create_shard "$domain" "$shard" ) &
     pids+=($!)
+    stagger=$((stagger + SHARD_START_STAGGER_SECONDS))
   done
   create_failures=0
   for pid in "${pids[@]}"; do wait "$pid" || create_failures=$((create_failures + 1)); done

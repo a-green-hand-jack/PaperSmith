@@ -32,6 +32,9 @@ ARXIV_API = "http://export.arxiv.org/api/query"
 ARXIV_PAGE_DELAY_SECONDS = 3.0
 # Backoff between transport retries, multiplied by the attempt number.
 HTTP_RETRY_BACKOFF_SECONDS = 2.0
+# Rate limiting and server faults mean "later", not "no".
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+HTTP_MAX_RETRY_DELAY_SECONDS = 120.0
 CROSSREF_API = "https://api.crossref.org/works"
 PDF_MAX_BYTES = 64 * 1024 * 1024
 SOURCE_MAX_BYTES = 256 * 1024 * 1024
@@ -185,8 +188,21 @@ def _http_get(
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = response.read(max_bytes + 1)
         except urllib.error.HTTPError as exc:
-            # A status code is an answer, not a transport hiccup: do not retry.
-            raise BlockedError("proposal", f"fetch failed with HTTP {exc.code}: {url}") from None
+            # Most status codes are an answer, not a hiccup. 429 and 5xx are the
+            # exception: they explicitly mean "later", and arXiv returns 429 as
+            # soon as several shards query it at once.
+            if exc.code not in RETRYABLE_STATUS or attempt >= attempts:
+                raise BlockedError("proposal", f"fetch failed with HTTP {exc.code}: {url}") from None
+            last_error = f"HTTP {exc.code}"
+            delay = HTTP_RETRY_BACKOFF_SECONDS * attempt
+            retry_after = (exc.headers or {}).get("Retry-After") if hasattr(exc, "headers") else None
+            if retry_after:
+                try:
+                    delay = max(delay, min(float(retry_after), HTTP_MAX_RETRY_DELAY_SECONDS))
+                except (TypeError, ValueError):
+                    pass
+            time.sleep(delay)
+            continue
         except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError) as exc:
             last_error = getattr(exc, "reason", None) or str(exc) or type(exc).__name__
             if attempt >= attempts:
