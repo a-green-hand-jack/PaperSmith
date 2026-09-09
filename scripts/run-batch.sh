@@ -66,8 +66,14 @@ while (($#)); do
   esac
 done
 
-provider="${LLM_PROVIDER:?LLM_PROVIDER is required (never defaulted)}"
-model="${LLM_MODEL:?LLM_MODEL is required (never defaulted)}"
+# Only the create stage runs model sessions. Requiring a provider for accept or
+# report made two read-only stages unusable without credentials.
+provider="${LLM_PROVIDER:-}"
+model="${LLM_MODEL:-}"
+if [[ "$stage" == all || "$stage" == create ]]; then
+  [[ -n "$provider" ]] || { echo "LLM_PROVIDER is required for the create stage (never defaulted)" >&2; exit 2; }
+  [[ -n "$model" ]] || { echo "LLM_MODEL is required for the create stage (never defaulted)" >&2; exit 2; }
+fi
 review_model="${LLM_REVIEW_MODEL:-$model}"
 account="${account:-$provider}"
 image="${PAPERSMITH_IMAGE:-papersmith:e2e}"
@@ -88,14 +94,14 @@ for entry in $shards_spec; do
 done
 echo "batch plan: ${#shard_plan[@]} shard(s), target $count task(s) each, provider=$provider model=$model"
 
-if [[ "$no_build" != true ]]; then
+if [[ "$no_build" != true && ( "$stage" == all || "$stage" == create ) ]]; then
   echo "building $image"
   docker build --build-arg AGENT_NAME=papersmith -t "$image" -f docker/Dockerfile . >/tmp/papersmith-batch-build.log 2>&1 \
     || { echo "image build failed; see /tmp/papersmith-batch-build.log" >&2; exit 1; }
 fi
 # Fail fast on a stale image rather than discovering it once per shard: every
 # worker would fail identically after the containers were already started.
-if ! docker run --rm --entrypoint papersmith-cli "$image" create --help 2>&1 | grep -q -- '--shard'; then
+if [[ "$stage" == all || "$stage" == create ]] && ! docker run --rm --entrypoint papersmith-cli "$image" create --help 2>&1 | grep -q -- '--shard'; then
   echo "image $image predates --shard/--ledger; rebuild it (drop --no-build)" >&2
   exit 2
 fi
@@ -105,7 +111,7 @@ fi
 # reference, never a key, so it is safe to write to a temp path.
 # --------------------------------------------------------------------------
 env_file="${PROVIDER_ENV_FILE:-}"
-if [[ -z "$env_file" ]]; then
+if [[ -z "$env_file" && ( "$stage" == all || "$stage" == create ) ]]; then
   env_file="/run/user/$(id -u)/papersmith-batch.$$.env"
   rm -f "$env_file"
   accountctl docker-run --providers "$account" --env-file-only --out "$env_file" >&2
@@ -113,7 +119,7 @@ if [[ -z "$env_file" ]]; then
 fi
 
 models_file="${PI_MODELS_FILE:-}"
-if [[ -z "$models_file" ]]; then
+if [[ -z "$models_file" && ( "$stage" == all || "$stage" == create ) ]]; then
   models_file="$(mktemp /tmp/pi-models-container.XXXXXX.json)"
   python3 - "$HOME/.pi/agent/models.json" "$provider" "$models_file" <<'PY'
 import json, re, sys
