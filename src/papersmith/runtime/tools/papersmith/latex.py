@@ -153,22 +153,94 @@ def uses_biblatex(text: str) -> bool:
     return bool(re.search(r"\\usepackage(\[[^\]]*\])?\{[^}]*biblatex", text)) or "\\addbibresource" in text
 
 
+def bibliography_preamble(main_tex_text: str) -> list[str]:
+    r"""Bibliography commands that must sit before \begin{document}.
+
+    \addbibresource is \@onlypreamble: emitting it in the body aborts the
+    compile with "Can be used only in preamble", which is what happened to every
+    biblatex paper in the corpus.
+    """
+    if uses_biblatex(main_tex_text):
+        return ["\\addbibresource{references.bib}"]
+    return []
+
+
 def bibliography_block(main_tex_text: str) -> list[str]:
-    r"""The bibliography commands that match the source's own machinery.
+    r"""The bibliography commands that belong in the body.
 
     biblatex rejects \bibliographystyle outright, so emitting it unconditionally
     broke every biblatex paper at compile time.
+
+    No \nocite{*} here. The template has no prose and therefore no \cite, so
+    bibtex writes a thebibliography with no \bibitem -- an empty list, which
+    LaTeX rejects as "Something's wrong--perhaps a missing \item". Emitting
+    \nocite{*} unconditionally fixes those seven papers and breaks fifteen
+    others, measured: typesetting every entry in a paper's .bib surfaces each
+    entry LaTeX cannot set as-is ("Misplaced alignment tab character &",
+    "Unicode character U+2212", "Missing $ inserted"). It is applied as a repair
+    escalation instead, so only the papers that hit the empty list pay for it.
     """
     if uses_biblatex(main_tex_text):
-        return ["\\addbibresource{references.bib}", "\\printbibliography"]
+        return ["\\printbibliography"]
     return [
         f"\\bibliographystyle{{{_detect_bibstyle(main_tex_text)}}}",
         "\\bibliography{references}",
     ]
 
 
+def empty_bibliography(log: str) -> bool:
+    r"""Whether the compile died on a thebibliography holding no \bibitem."""
+    return r"perhaps a missing \item" in log or "Empty `thebibliography' environment" in log
+
+
+def cite_everything(template_text: str) -> str:
+    r"""Add \nocite{*} so bibtex emits at least one \bibitem."""
+    if r"\nocite" in template_text:
+        return template_text
+    for anchor in (r"\printbibliography", r"\bibliography{references}"):
+        position = template_text.find(anchor)
+        if position != -1:
+            return template_text[:position] + "\\nocite{*}\n" + template_text[position:]
+    return template_text
+
+
+def drop_bibliography(template_text: str) -> str:
+    r"""Remove the bibliography commands entirely.
+
+    Last resort for a paper whose .bib cannot be typeset at all: a template
+    without a reference list still compiles and still states the writing task.
+    """
+    out = []
+    for line in template_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith((r"\nocite", r"\printbibliography", r"\bibliography{",
+                                r"\bibliographystyle{", r"\addbibresource{")):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+# Names that must never be stubbed. Redefining any of these as a no-op does not
+# rescue a template, it destroys it: \end as a no-op unbalances every environment
+# in the document. They appear in the log because TeX reports the line it was
+# reading, not only the missing name.
+NEVER_STUB = frozenset({
+    "begin", "end", "item", "par", "documentclass", "usepackage", "input",
+    "include", "newcommand", "renewcommand", "providecommand", "def", "let",
+    "expandafter", "csname", "endcsname", "makeatletter", "makeatother",
+    "relax", "write", "immediate", "the", "protect",
+})
+
+
 def undefined_macros(log: str) -> list[str]:
-    """Control sequences TeX reported as undefined, for stubbing."""
+    r"""Control sequences TeX reported as undefined, for stubbing.
+
+    Two filters, both learned from papers this lost. Structural primitives are
+    excluded because stubbing \end is fatal, not corrective. Internal names
+    containing @ are excluded because \providecommand{\@foo} outside
+    \makeatletter parses as \@ followed by text, and the compile then dies on
+    "Command \@ already defined" -- a failure invented entirely by the repair.
+    """
     names: list[str] = []
     lines = log.splitlines()
     for index, line in enumerate(lines):
@@ -177,8 +249,9 @@ def undefined_macros(log: str) -> list[str]:
         for follow in lines[index + 1 : index + 4]:
             for match in re.finditer(r"\\([A-Za-z@]+)", follow):
                 name = match.group(1)
-                if name not in names:
-                    names.append(name)
+                if "@" in name or name in NEVER_STUB or name in names:
+                    continue
+                names.append(name)
     return names
 
 
@@ -271,6 +344,58 @@ def _declares(text: str, name: str) -> bool:
     return bool(re.search(rf"\\{name}\s*(?:\[[^\]]*\])?\s*\{{", text))
 
 
+# Front-matter commands carried verbatim, as a block. A document class treats
+# these as one unit: an author without its affiliation is an error in AASTeX, and
+# revtex's \maketitle reads counters that only \collaboration and friends set.
+FRONT_MATTER_COMMANDS = (
+    "author", "affiliation", "altaffiliation", "affil", "affiliations",
+    "address", "email", "thanks", "collaboration", "homepage", "institute",
+    "orcid", "date", "correspondingauthor", "nocollaboration",
+)
+
+
+def _front_matter_block(body: str) -> list[str]:
+    r"""The source's author/affiliation commands, in order, verbatim.
+
+    Scanning stops at \maketitle (or the first sectioning command) so an \email
+    buried in the paper's prose is not mistaken for front matter.
+    """
+    end = len(body)
+    for stop in (r"\\maketitle", r"\\section\b", r"\\chapter\b"):
+        match = re.search(stop, body)
+        if match:
+            end = min(end, match.start())
+    region = body[:end]
+
+    spans: list[tuple[int, int]] = []
+    for name in FRONT_MATTER_COMMANDS:
+        for match in re.finditer(rf"\\{name}\s*(?:\[[^\]]*\])?\s*\{{", region):
+            _, stop_index = _balanced_block(region, match.end() - 1)
+            spans.append((match.start(), stop_index))
+    spans.sort()
+
+    # Drop spans nested inside another. \author{...} routinely contains \thanks
+    # and \orcid for each author, and re-emitting those as standalone commands
+    # after the author block duplicates them outside the scope that defines them.
+    block: list[str] = []
+    covered_to = -1
+    for start, stop in spans:
+        if start < covered_to:
+            continue
+        covered_to = stop
+        text = region[start:stop]
+        # Carrying text verbatim only works if it stands alone. _balanced_block
+        # runs to end-of-string when the braces never close, and an unbalanced
+        # capture breaks the whole template with errors invented by the repair
+        # itself: "File ended while scanning use of \@affiliation", "Extra }".
+        # An unbalanced span is dropped rather than emitted.
+        if text.count("{") != text.count("}"):
+            continue
+        if text not in block:
+            block.append(text)
+    return block
+
+
 def derive_template(main_tex_text: str) -> str:
     doc_match = re.search(r"\\begin\{document\}", main_tex_text)
     preamble = main_tex_text[: doc_match.start()] if doc_match else ""
@@ -291,7 +416,20 @@ def derive_template(main_tex_text: str) -> str:
     # Keep title/author in the preamble verbatim; for revtex-style papers they
     # live in the body and must be re-emitted before \maketitle.
     title = "" if _declares(preamble, "title") else (_extract_command(body, "title") or "")
-    author = "" if _declares(preamble, "author") else (_extract_command(body, "author") or "")
+    # Only the lone \author is carried. Lifting the whole author/affiliation block
+    # verbatim was tried and measured against this corpus: it rescued the papers
+    # whose class demands an affiliation, and broke eighteen others, for a net of
+    # zero. Brace counting cannot tell a real closing brace from one a % comment
+    # hides, so a "balanced" capture is routinely unbalanced to TeX, and the
+    # template then fails with errors the repair invented: "File ended while
+    # scanning use of \@affiliation", "Misplaced alignment tab character &".
+    # Carrying front matter needs a real tokenizer, not a regex; until then the
+    # classes that demand affiliations stay rejected, honestly labelled.
+    author_block: list[str] = []
+    if not _declares(preamble, "author"):
+        lone = _extract_command(body, "author")
+        if lone:
+            author_block = ["\\author{" + lone + "}"]
 
     # Emit an empty abstract in the same form the source uses.
     if "\\begin{abstract}" in main_tex_text:
@@ -301,15 +439,22 @@ def derive_template(main_tex_text: str) -> str:
     else:
         abstract_block = ""
 
-    lines = [preamble.rstrip()]
+    head = preamble.rstrip()
+    # \maketitle is always emitted, and it aborts with "No \title given" unless a
+    # \title exists. When neither the preamble nor the body yielded one, an empty
+    # placeholder in the preamble is the honest stand-in: the template is what the
+    # writer fills in, and seven papers were rejected over this alone.
+    if not title and not _declares(preamble, "title"):
+        head += "\n\\title{}"
+    lines = [head]
+    lines.extend(bibliography_preamble(main_tex_text))
     lines.append("\\begin{document}")
     # Preserving the source's front matter verbatim was measured against this
     # corpus: it recovered nothing and lost two papers to brace imbalance, so the
     # reconstruction stays.
     if title:
         lines.append("\\title{" + title + "}")
-    if author:
-        lines.append("\\author{" + author + "}")
+    lines.extend(author_block)
     if abstract_block:
         lines.append(abstract_block)
     lines.append("\\maketitle")
@@ -373,13 +518,34 @@ def extract_tables(main_tex_path: Path, main_tex_text: str, out_dir: Path) -> li
     return inventory
 
 
+STYLE_SUFFIXES = (".sty", ".cls", ".bst", ".clo", ".cfg", ".def", ".ldf", ".bbx", ".cbx", ".lbx")
+
+
 def extract_style_files(directory: Path, texmf_dir: Path) -> list[str]:
-    """Copy paper-local .sty/.cls/.bst/.clo/.cfg files into a texmf dir."""
+    r"""Copy paper-local style files into a texmf dir, keeping their layout.
+
+    Both the flattened name and the original relative path are provided, because
+    sources disagree about which one they ask for: a paper doing
+    \usepackage{icml2026_style/icml2026} needs the subdirectory to survive, while
+    a paper whose class sits in a subdirectory but is loaded by bare name needs
+    the flattened copy. Flattening alone lost two papers to "File
+    `icml2026_style/icml2026.sty' not found"; keeping only the tree would lose
+    the others.
+    """
     texmf_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for path in sorted(directory.rglob("*")):
-        if path.suffix in (".sty", ".cls", ".bst", ".clo", ".cfg"):
-            shutil.copy2(path, texmf_dir / path.name)
+        if not path.is_file() or path.suffix not in STYLE_SUFFIXES:
+            continue
+        relative = path.relative_to(directory)
+        if relative.parent != Path("."):
+            nested = texmf_dir / relative
+            nested.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, nested)
+            copied.append(str(relative))
+        flat = texmf_dir / path.name
+        if not flat.exists():
+            shutil.copy2(path, flat)
             copied.append(path.name)
     return copied
 

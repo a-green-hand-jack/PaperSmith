@@ -274,6 +274,26 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
             if template_proof["ok"]:
                 repairs.append(f"stubbed undefined macros: {', '.join(missing[:8])}")
 
+    if not template_proof["ok"] and latex.empty_bibliography(template_proof["log"]):
+        # Escalation 3: the template has no prose, so it cites nothing, so bibtex
+        # writes a thebibliography with no \bibitem and LaTeX rejects the empty
+        # list. \nocite{*} is applied only here, never by default: typesetting
+        # every entry of a paper's .bib rescues these papers and breaks fifteen
+        # others whose entries LaTeX cannot set as-is.
+        template_tex = latex.cite_everything(template_tex)
+        template_proof = recompile()
+        if template_proof["ok"]:
+            repairs.append("cited all references to fill an empty bibliography")
+
+    if not template_proof["ok"] and latex.empty_bibliography(template_proof["log"]):
+        # Escalation 4: that .bib cannot be typeset at all. A template without a
+        # reference list still compiles and still states the writing task, which
+        # beats discarding a usable paper over its bibliography.
+        template_tex = latex.drop_bibliography(template_tex)
+        template_proof = recompile()
+        if template_proof["ok"]:
+            repairs.append("dropped an unusable bibliography")
+
     if not template_proof["ok"]:
         # Still failing. Classify the loss honestly by asking whether the paper
         # itself builds, so a derivation defect is never filed as a bad paper.
