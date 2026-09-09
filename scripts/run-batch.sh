@@ -154,7 +154,17 @@ create_shard() {
       return 2
     fi
   else
-    rm -rf "$dir"; mkdir -p "$dir"
+    # The containers run as root, so a previous run's tree is root-owned and the
+    # host user's rm silently fails on it. Ignoring that left a half-deleted run
+    # directory in place and the shard produced nothing, reported as "0 tasks"
+    # with no cause anywhere. Check the outcome, not rm's exit code.
+    rm -rf "$dir" 2>/dev/null || true
+    if [[ -e "$dir" ]]; then
+      echo "[$domain $shard] cannot clear $dir - leftovers are owned by the container's root." >&2
+      echo "  clear it with: docker run --rm -v $dir:/target --entrypoint find $image /target -mindepth 1 -delete && rmdir $dir" >&2
+      return 2
+    fi
+    mkdir -p "$dir"
   fi
 
   local cmd=(papersmith create "discover and reconstruct $domain research papers"
