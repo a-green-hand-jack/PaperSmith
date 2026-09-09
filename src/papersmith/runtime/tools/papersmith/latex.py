@@ -335,7 +335,9 @@ def pass_package_options(text: str, package: str) -> str:
     in) loads the package first with no options, and the preamble's explicit
     \usepackage[opts]{pkg} then clashes with it. There is no duplicate
     \usepackage to drop, so deduplication is a no-op -- four papers in the corpus
-    failed here with xcolor loaded once in the source and once by revtex.
+    failed here with xcolor loaded once in the source and once by revtex. Hoisting
+    recovers two of them with no losses; the rest clash for reasons this does not
+    reach, and stay rejected under a label that names the real error.
 
     Requesting the options before \documentclass makes them part of that first
     load, which is the remedy LaTeX itself documents.
