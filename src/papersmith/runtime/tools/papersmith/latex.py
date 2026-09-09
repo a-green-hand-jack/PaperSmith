@@ -113,6 +113,87 @@ def _detect_bibstyle(main_tex_text: str) -> str:
     return "plain"
 
 
+INLINE_MAX_DEPTH = 5
+INLINE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def inline_inputs(text: str, source_dir: Path, depth: int = 0) -> str:
+    r"""Inline local \input/\include fragments so a template stands alone.
+
+    A derived template is compiled and shipped away from the paper's source
+    directory, so any fragment it pulls in must travel with it. Unresolvable
+    targets are left untouched rather than guessed at, and recursion is bounded
+    so a self-referential source cannot loop.
+    """
+    if depth >= INLINE_MAX_DEPTH or len(text) > INLINE_MAX_BYTES:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        target = match.group(2).strip()
+        if not target or target.startswith(("/", "..")):
+            return match.group(0)
+        candidates = [source_dir / target]
+        if not target.endswith(".tex"):
+            candidates.append(source_dir / f"{target}.tex")
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(source_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            if resolved.is_file():
+                body = resolved.read_text(encoding="utf-8", errors="replace")
+                return inline_inputs(body, source_dir, depth + 1)
+        return match.group(0)
+
+    return re.sub(r"\\(input|include)\s*\{([^}]*)\}", replace, text)
+
+
+def uses_biblatex(text: str) -> bool:
+    return bool(re.search(r"\\usepackage(\[[^\]]*\])?\{[^}]*biblatex", text)) or "\\addbibresource" in text
+
+
+def bibliography_block(main_tex_text: str) -> list[str]:
+    r"""The bibliography commands that match the source's own machinery.
+
+    biblatex rejects \bibliographystyle outright, so emitting it unconditionally
+    broke every biblatex paper at compile time.
+    """
+    if uses_biblatex(main_tex_text):
+        return ["\\addbibresource{references.bib}", "\\printbibliography"]
+    return [
+        f"\\bibliographystyle{{{_detect_bibstyle(main_tex_text)}}}",
+        "\\bibliography{references}",
+    ]
+
+
+def undefined_macros(log: str) -> list[str]:
+    """Control sequences TeX reported as undefined, for stubbing."""
+    names: list[str] = []
+    lines = log.splitlines()
+    for index, line in enumerate(lines):
+        if "Undefined control sequence" not in line:
+            continue
+        for follow in lines[index + 1 : index + 4]:
+            for match in re.finditer(r"\\([A-Za-z@]+)", follow):
+                name = match.group(1)
+                if name not in names:
+                    names.append(name)
+    return names
+
+
+def stub_macros(text: str, names: list[str]) -> str:
+    r"""Declare missing macros as no-ops ahead of \begin{document}."""
+    if not names:
+        return text
+    stubs = "\n".join(f"\\providecommand{{\\{name}}}[1][]{{}}" for name in names)
+    marker = "\\begin{document}"
+    position = text.find(marker)
+    if position == -1:
+        return stubs + "\n" + text
+    return text[:position] + stubs + "\n" + text[position:]
+
+
 def derive_template(main_tex_text: str) -> str:
     doc_match = re.search(r"\\begin\{document\}", main_tex_text)
     preamble = main_tex_text[: doc_match.start()] if doc_match else ""
@@ -154,8 +235,7 @@ def derive_template(main_tex_text: str) -> str:
     lines.append("\\maketitle")
     for level, name in structure:
         lines.append(f"\\{level}{{{name}}}")
-    lines.append(f"\\bibliographystyle{{{_detect_bibstyle(main_tex_text)}}}")
-    lines.append("\\bibliography{references}")
+    lines.extend(bibliography_block(main_tex_text))
     lines.append("\\end{document}")
     return "\n".join(lines) + "\n"
 
@@ -306,6 +386,38 @@ def _compile_commands(name: str) -> list[list[str]]:
         ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape", f"{name}.tex"],
         ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape", f"{name}.tex"],
     ]
+
+
+def compile_source(source_dir: Path, main_tex: Path, out_dir: Path) -> dict:
+    """Build the paper's own main file, in a copy of its own directory.
+
+    This is the honest reducibility test. A paper published on arXiv was built
+    there, so if its source still builds here, any downstream compile failure
+    belongs to this pipeline and must not be recorded as a bad paper. The copy
+    keeps the build from writing into the fetched source we hash as evidence.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    work = out_dir / "source"
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
+    shutil.copytree(source_dir, work)
+    name = main_tex.stem
+    env = _tex_env(None)
+    log: list[str] = []
+    for command in _compile_commands(name):
+        returncode, stdout, stderr = _run_compile(command, work, env)
+        if command[0] == "bibtex":
+            continue
+        log.append(" ".join(command))
+        if returncode != 0:
+            log.append(stdout[-2000:])
+            log.append(stderr[-2000:])
+            break
+    pdf = work / f"{name}.pdf"
+    tex_log = work / f"{name}.log"
+    if tex_log.is_file():
+        log.append(tex_log.read_text(encoding="utf-8", errors="replace")[-4000:])
+    return {"ok": pdf.is_file() and pdf.stat().st_size > 0, "log": "\n".join(log), "pdf": pdf if pdf.is_file() else None}
 
 
 def compile_ground_truth_pdf(

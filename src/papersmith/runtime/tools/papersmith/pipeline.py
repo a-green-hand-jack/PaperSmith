@@ -221,24 +221,55 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     if not probe["ok"]:
         raise BlockedError("proposal", "not reducible: " + "; ".join(probe["issues"]))
     main_tex_text = main_tex.read_text(encoding="utf-8", errors="replace")
-    template_tex = latex.derive_template(main_tex_text)
     references_bib = latex.extract_references(sources_dir)
     texmf_dir = state.root / "stages" / "materials" / "texmf"
     latex.extract_style_files(sources_dir, texmf_dir)
+
+    # A paper on arXiv demonstrably builds: arXiv produced its PDF. So a template
+    # that will not compile is this pipeline's defect, not a property of the
+    # paper, and it must be repaired rather than used as grounds for rejection.
+    # Fragments are inlined first so the template stands alone in the delivered
+    # task, which never ships the paper's source directory.
+    inlined = latex.inline_inputs(main_tex_text, sources_dir)
+    template_tex = latex.derive_template(inlined)
     # Per-paper proof directory: a shared one let each paper overwrite the
     # previous paper's compile log, so the dominant rejection bucket could not
     # be diagnosed after the fact.
-    template_proof = latex.compile_template(
-        template_tex,
-        references_bib,
-        state.root / "stages" / "materials" / "template-proof" / slug,
-        texmf_dir,
-    )
+    proof_dir = state.root / "stages" / "materials" / "template-proof" / slug
+    template_proof = latex.compile_template(template_tex, references_bib, proof_dir, texmf_dir)
+    repairs: list[str] = []
+
     if not template_proof["ok"]:
+        # Escalation 1: declare macros TeX reported as undefined. These are
+        # typically defined in source the derivation stripped.
+        missing = latex.undefined_macros(template_proof["log"])
+        if missing:
+            template_tex = latex.stub_macros(template_tex, missing)
+            template_proof = latex.compile_template(
+                template_tex, references_bib, proof_dir, texmf_dir
+            )
+            if template_proof["ok"]:
+                repairs.append(f"stubbed undefined macros: {', '.join(missing[:8])}")
+
+    if not template_proof["ok"]:
+        # Still failing. Classify the loss honestly by asking whether the paper
+        # itself builds, so a derivation defect is never filed as a bad paper.
+        source_build = latex.compile_source(
+            sources_dir, main_tex, state.root / "stages" / "proposal" / "source-build" / slug
+        )
+        detail = latex.summarize_compile_log(template_proof["log"])
+        if not source_build["ok"]:
+            raise BlockedError(
+                "proposal",
+                "source does not build: " + latex.summarize_compile_log(source_build["log"]),
+            )
         raise BlockedError(
             "proposal",
-            "template does not compile: " + latex.summarize_compile_log(template_proof["log"]),
+            "template derivation failed (source builds, so this is a PaperSmith defect): " + detail,
         )
+
+    if repairs:
+        state.append_event("template_repaired", paper=identifier, repairs=repairs)
     state.append_event("template_derived", paper=identifier, compiles=True)
 
     # 3. materials: model writes overview + captions (read-only session)
