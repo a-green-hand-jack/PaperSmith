@@ -26,15 +26,34 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+# https, not http: the http endpoint 301-redirects, costing an extra round
+# trip on every single request.
+ARXIV_API = "https://export.arxiv.org/api/query"
 # arXiv asks for roughly one request every three seconds. A batch with ten
 # parallel workers will be throttled without an explicit pause between pages.
 ARXIV_PAGE_DELAY_SECONDS = 3.0
 # Backoff between transport retries, multiplied by the attempt number.
-HTTP_RETRY_BACKOFF_SECONDS = 2.0
+HTTP_RETRY_BACKOFF_SECONDS = 5.0
 # Rate limiting and server faults mean "later", not "no".
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 HTTP_MAX_RETRY_DELAY_SECONDS = 120.0
+# arXiv asks for roughly one request every three seconds and blocks for a while
+# when that is exceeded. Every paper costs at least two requests (metadata, then
+# the source bundle), so without a floor here a single shard bursts well past the
+# limit and earns a 429 for the whole batch.
+ARXIV_MIN_REQUEST_INTERVAL_SECONDS = 3.0
+_last_arxiv_request = 0.0
+
+
+def _throttle_arxiv(url: str) -> None:
+    """Hold each process to arXiv's requested request rate."""
+    global _last_arxiv_request
+    if "arxiv.org" not in url:
+        return
+    elapsed = time.monotonic() - _last_arxiv_request
+    if elapsed < ARXIV_MIN_REQUEST_INTERVAL_SECONDS:
+        time.sleep(ARXIV_MIN_REQUEST_INTERVAL_SECONDS - elapsed)
+    _last_arxiv_request = time.monotonic()
 CROSSREF_API = "https://api.crossref.org/works"
 PDF_MAX_BYTES = 64 * 1024 * 1024
 SOURCE_MAX_BYTES = 256 * 1024 * 1024
@@ -184,6 +203,7 @@ def _http_get(
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     last_error = ""
     for attempt in range(1, max(attempts, 1) + 1):
+        _throttle_arxiv(url)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = response.read(max_bytes + 1)
