@@ -13,3 +13,6 @@ work/
 release/
 __pycache__/
 *.pyc
+
+# Task trees copied out of a batch for human review; large and reproducible.
+accepted-batch5/

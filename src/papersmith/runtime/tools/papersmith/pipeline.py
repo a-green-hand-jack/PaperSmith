@@ -326,12 +326,16 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     state.append_event("template_derived", paper=identifier, compiles=True)
 
     # 3. materials: model writes overview + captions (read-only session)
+    # All of this reads the inlined text. A paper that keeps its figures or
+    # tables in an \input fragment shows none of them to a scan of the raw
+    # main.tex, so the task shipped without the images its own ground truth
+    # includes, and the grader's recompile failed on the missing file.
     figures = latex.extract_figures(
-        sources_dir, main_tex_text, state.root / "stages" / "materials" / "figures"
+        sources_dir, inlined, state.root / "stages" / "materials" / "figures"
     )
     tables_dir = state.root / "stages" / "materials" / "tables"
-    table_inventory = latex.extract_tables(main_tex, main_tex_text, tables_dir)
-    prompt = build_materials_prompt(main_tex_text, figures, table_inventory, profile["materials_domain"])
+    table_inventory = latex.extract_tables(main_tex, inlined, tables_dir)
+    prompt = build_materials_prompt(inlined, figures, table_inventory, profile["materials_domain"])
     output: dict = {}
     validation = {"valid": False, "issues": ["no attempt"]}
     session = {"fingerprint": None}
@@ -386,7 +390,9 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     if pdf_proof.exists():
         _shutil.rmtree(pdf_proof)
     _shutil.copytree(sources_dir, pdf_proof)
-    pdf_result = latex.compile_ground_truth_pdf(main_tex_text, references_bib, pdf_proof, "main")
+    # Compile exactly what the task will ship. Proving the raw source builds says
+    # nothing about the inlined text the grader actually recompiles.
+    pdf_result = latex.compile_ground_truth_pdf(inlined, references_bib, pdf_proof, "main")
     ground_truth_pdf = pdf_result.get("pdf")
     if ground_truth_pdf is None:
         state.append_event("pdf_compile_failed", paper=identifier, log=pdf_result.get("log", "")[-800:])
@@ -410,7 +416,12 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
         relevant_experience=profile["experience"],
         config=config,
         materials_dir=materials_dir,
-        ground_truth_tex=main_tex_text,
+        # The inlined text, not the raw source. The task ships main.tex without
+        # the paper's source directory, so a \input{fragment} left in it points
+        # at a file that is not there and the grader's recompile dies with
+        # "File `SD_LZ_macros.tex' not found" -- ten of eighteen oracle failures
+        # in one batch. The template was already inlined; the ground truth was not.
+        ground_truth_tex=inlined,
         ground_truth_pdf=ground_truth_pdf,
         research_overview_long=output.get("overview_long") or "",
         source_manifest=source_manifest,

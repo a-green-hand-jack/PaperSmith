@@ -276,8 +276,14 @@ def copy_graphics(source_dir: Path, dest_dir: Path, limit_bytes: int = 64 * 1024
     Preambles and author blocks routinely \includegraphics small assets such as
     an ORCID badge. Those live in the paper's directory, so a template compiled
     anywhere else fails on a missing file — which is a packaging problem, not a
-    property of the paper. Names are flattened to their basename because that is
-    how \includegraphics refers to them once \graphicspath is gone.
+    property of the paper.
+
+    Both layouts are written: the flattened basename, for sources that refer to
+    an image by bare name once \graphicspath is gone, and the original relative
+    path, for sources that write \includegraphics{figures/fig01}. Flattening
+    alone broke six ground-truth recompiles in one batch with "File
+    `figures/fig01_intro.pdf' not found" -- the same defect the style-file copier
+    had, in the same shape.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -290,12 +296,20 @@ def copy_graphics(source_dir: Path, dest_dir: Path, limit_bytes: int = 64 * 1024
         size = path.stat().st_size
         if size > budget:
             break
-        target = dest_dir / path.name
-        if target.exists():
-            continue
-        shutil.copy2(path, target)
-        budget -= size
-        copied += 1
+        relative = path.relative_to(source_dir)
+        targets = [dest_dir / path.name]
+        if relative.parent != Path("."):
+            targets.append(dest_dir / relative)
+        wrote = False
+        for target in targets:
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            wrote = True
+        if wrote:
+            budget -= size
+            copied += 1
     return copied
 
 
@@ -509,18 +523,52 @@ def extract_references(directory: Path) -> str:
 
 
 def extract_figures(directory: Path, main_tex_text: str, out_dir: Path) -> list[str]:
+    r"""Copy every image the document includes, into the layout it asks for.
+
+    \includegraphics routinely omits the extension, and graphics drivers resolve
+    it by search: \includegraphics{fig_money} may mean fig_money.pdf, .png or
+    .jpg. Trying only the literal name and a .pdf guess left three ground truths
+    shipping without images they include, and the grader's recompile then failed
+    with "File `fig_money' not found" -- scored as a bad task rather than as the
+    packaging defect it was.
+
+    A name with a real suffix is still honoured first, and a bare name that also
+    happens to end in a dotted word (v1.2_plot) is looked up as written before
+    any extension is appended.
+    """
     copied: list[str] = []
     referenced = set(re.findall(r"\\includegraphics(?:\*)?(?:\[[^\]]*\])*\{([^}]+)\}", main_tex_text))
     for ref in referenced:
         name = Path(ref.strip())
-        candidates = [directory / name, directory / name.with_suffix(name.suffix or ".pdf")]
+        candidates = [directory / name]
+        if name.suffix.lower() not in GRAPHICS_SUFFIXES:
+            candidates += [directory / (str(name) + suffix) for suffix in GRAPHICS_SUFFIXES]
         source = next((c for c in candidates if c.is_file()), None)
         if source is None:
+            # A path the source spells differently from the file on disk (a
+            # \graphicspath prefix, say). Fall back to a basename match rather
+            # than shipping a task whose ground truth cannot find its own figure.
+            stem = name.name
+            source = next(
+                (c for c in sorted(directory.rglob("*"))
+                 if c.is_file() and c.suffix.lower() in GRAPHICS_SUFFIXES
+                 and (c.name == stem or c.stem == stem)),
+                None,
+            )
+        if source is None:
             continue
-        target = out_dir / source.relative_to(directory)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        copied.append(str(target.relative_to(out_dir)))
+        # Write the file where the document looks for it, keeping the reference's
+        # own directory and the resolved extension, and also under its source
+        # layout. Copying only to the source layout leaves \includegraphics
+        # {figures/x} unresolved whenever the file sits elsewhere on disk.
+        wanted = Path(ref.strip())
+        if wanted.suffix.lower() not in GRAPHICS_SUFFIXES:
+            wanted = wanted.with_name(wanted.name + source.suffix)
+        targets = {out_dir / wanted, out_dir / source.relative_to(directory)}
+        for target in sorted(targets):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied.append(str(target.relative_to(out_dir)))
     return copied
 
 
