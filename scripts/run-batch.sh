@@ -31,8 +31,8 @@ Options:
   --count N         Target tasks per shard (default 5).
   --dir DIR    Where per-shard run directories go (default /tmp/papersmith-batch).
   --account NAME    accountctl provider account (default: the provider name).
-  --accept-jobs N   Concurrent Harbor acceptance workers (default: a quarter of
-                    the host's cores, at least 2, at most 12).
+  --accept-jobs N   Concurrent Harbor acceptance workers (default: whichever is
+                    smaller of cores/4 and free-GB/6, capped at 8).
   --stage STAGE     create | accept | report | all (default all).
   --resume          Continue existing run directories instead of recreating them.
   --no-build        Reuse the existing image instead of rebuilding it.
@@ -48,15 +48,20 @@ count=5
 run_root="/tmp/papersmith-batch"
 account=""
 # Acceptance is the batch's bottleneck: two Harbor container runs per task, each
-# with a LaTeX compile inside. It is CPU-bound and the host is the only limit, so
-# the default follows the host instead of a constant -- a fixed 2 left 38 of 40
-# cores idle while 300 tasks queued. A quarter of the cores, capped, leaves room
-# for the create shards that may still be running and for everything else here.
+# carrying a full texlive and a LaTeX compile. A fixed 2 left 38 of 40 cores idle
+# while tasks queued, so the width follows the host -- but it follows MEMORY as
+# well as cores. Sizing on cores alone put ten texlive containers up at once and
+# the kernel killed the run with nothing to show for it: zero receipts from fifty
+# tasks. Roughly 6 GB per concurrent trial is what that peak implies here.
 accept_jobs="$(
   cores="$( (nproc 2>/dev/null || echo 4) )"
-  jobs=$(( cores / 4 ))
-  ((jobs < 2)) && jobs=2
-  ((jobs > 12)) && jobs=12
+  by_cores=$(( cores / 4 ))
+  mem_gb="$( (free -g 2>/dev/null | awk '/^Mem:/{print $7}') )"
+  [[ -z "$mem_gb" || "$mem_gb" -lt 1 ]] && mem_gb=8
+  by_mem=$(( mem_gb / 6 ))
+  jobs=$(( by_cores < by_mem ? by_cores : by_mem ))
+  ((jobs < 1)) && jobs=1
+  ((jobs > 8)) && jobs=8
   echo "$jobs"
 )"
 stage="all"
