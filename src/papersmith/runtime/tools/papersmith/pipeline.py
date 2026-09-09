@@ -259,10 +259,20 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
         # Inlining fragments makes this easy to trigger; the first load wins.
         clash = latex.clashing_package(template_proof["log"])
         if clash:
-            template_tex = latex.deduplicate_packages(template_tex, clash)
-            template_proof = recompile()
-            if template_proof["ok"]:
-                repairs.append(f"deduplicated package: {clash}")
+            deduplicated = latex.deduplicate_packages(template_tex, clash)
+            if deduplicated != template_tex:
+                template_tex = deduplicated
+                template_proof = recompile()
+                if template_proof["ok"]:
+                    repairs.append(f"deduplicated package: {clash}")
+            else:
+                # Nothing to deduplicate: the first load came from the document
+                # class, not from the preamble, so the options have to be merged
+                # into that load instead of a later one being dropped.
+                template_tex = latex.pass_package_options(template_tex, clash)
+                template_proof = recompile()
+                if template_proof["ok"]:
+                    repairs.append(f"hoisted options for package: {clash}")
 
     if not template_proof["ok"]:
         # Escalation 2: declare macros TeX reported as undefined. These are

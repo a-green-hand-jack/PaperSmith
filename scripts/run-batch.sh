@@ -31,7 +31,8 @@ Options:
   --count N         Target tasks per shard (default 5).
   --dir DIR    Where per-shard run directories go (default /tmp/papersmith-batch).
   --account NAME    accountctl provider account (default: the provider name).
-  --accept-jobs N   Concurrent Harbor acceptance workers (default 2).
+  --accept-jobs N   Concurrent Harbor acceptance workers (default: a quarter of
+                    the host's cores, at least 2, at most 12).
   --stage STAGE     create | accept | report | all (default all).
   --resume          Continue existing run directories instead of recreating them.
   --no-build        Reuse the existing image instead of rebuilding it.
@@ -46,7 +47,18 @@ shards_spec=""
 count=5
 run_root="/tmp/papersmith-batch"
 account=""
-accept_jobs=2
+# Acceptance is the batch's bottleneck: two Harbor container runs per task, each
+# with a LaTeX compile inside. It is CPU-bound and the host is the only limit, so
+# the default follows the host instead of a constant -- a fixed 2 left 38 of 40
+# cores idle while 300 tasks queued. A quarter of the cores, capped, leaves room
+# for the create shards that may still be running and for everything else here.
+accept_jobs="$(
+  cores="$( (nproc 2>/dev/null || echo 4) )"
+  jobs=$(( cores / 4 ))
+  ((jobs < 2)) && jobs=2
+  ((jobs > 12)) && jobs=12
+  echo "$jobs"
+)"
 stage="all"
 resume=false
 no_build=false

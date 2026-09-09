@@ -94,14 +94,23 @@ run_trial() {
   # Record the real exit status instead of asserting success, and keep the log:
   # a discarded log makes a failure in a 300-task batch undiagnosable.
   local status=0
+  # Each trial's wall clock is recorded. Acceptance is the batch's bottleneck --
+  # two container runs per task, each with a LaTeX compile inside -- and without
+  # a duration in the receipt the cost of a 300-task batch can only be guessed.
+  local started_at finished_at began
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  began="$(date +%s)"
   harbor run -p "$task_dir" --agent "$label" --jobs-dir "$out" --yes >"$log" 2>&1 || status=$?
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local elapsed=$(( $(date +%s) - began ))
   if [[ "$status" -ne 0 ]]; then
     echo "harbor $label trial exited $status; see $log" >&2
   fi
-  python3 - "$out" "$label" "$status" <<'PY'
+  python3 - "$out" "$label" "$status" "$started_at" "$finished_at" "$elapsed" <<'PY'
 import json, sys
 from pathlib import Path
 jobs_dir, label, exit_status = sys.argv[1], sys.argv[2], sys.argv[3]
+started_at, finished_at, elapsed = sys.argv[4], sys.argv[5], sys.argv[6]
 results = sorted(Path(jobs_dir).glob("*/result.json"))
 if not results:
     raise SystemExit(f"{label} trial produced no result.json under {jobs_dir}")
@@ -114,28 +123,40 @@ if trial.get("n_errors", 0):
     raise SystemExit(f"{label} trial errored")
 reward = float(next(iter(reward_stats)))
 trial_id = next(iter(reward_stats.values()))[0]
-print(f"{reward} {trial_id} {exit_status}")
+print(f"{reward} {trial_id} {exit_status} {started_at} {finished_at} {elapsed}")
 PY
 }
 
 oracle_out="$(run_trial oracle)"
 nop_out="$(run_trial nop)"
-read -r oracle_reward oracle_trial oracle_status <<<"$oracle_out"
-read -r nop_reward nop_trial nop_status <<<"$nop_out"
+read -r oracle_reward oracle_trial oracle_status oracle_start oracle_end oracle_secs <<<"$oracle_out"
+read -r nop_reward nop_trial nop_status nop_start nop_end nop_secs <<<"$nop_out"
 
-python3 - "$receipt_path" "$request_hash" "$task_id" "$oracle_reward" "$oracle_trial" "$oracle_status" "$nop_reward" "$nop_trial" "$nop_status" <<'PY'
+python3 - "$receipt_path" "$request_hash" "$task_id" \
+  "$oracle_reward" "$oracle_trial" "$oracle_status" "$oracle_start" "$oracle_end" "$oracle_secs" \
+  "$nop_reward" "$nop_trial" "$nop_status" "$nop_start" "$nop_end" "$nop_secs" <<'PY'
 import json, sys
 receipt_path, request_hash, task_id = sys.argv[1], sys.argv[2], sys.argv[3]
 oracle_reward, oracle_trial, oracle_status = float(sys.argv[4]), sys.argv[5], int(sys.argv[6])
-nop_reward, nop_trial, nop_status = float(sys.argv[7]), sys.argv[8], int(sys.argv[9])
+oracle_start, oracle_end, oracle_secs = sys.argv[7], sys.argv[8], int(sys.argv[9])
+nop_reward, nop_trial, nop_status = float(sys.argv[10]), sys.argv[11], int(sys.argv[12])
+nop_start, nop_end, nop_secs = sys.argv[13], sys.argv[14], int(sys.argv[15])
 receipt = {
     "worker": "papersmith-acceptance-worker",
     "request_hash": request_hash,
     "task_id": task_id,
     "trials": {
-        "oracle": {"trial_id": oracle_trial, "reward": oracle_reward, "exit_status": oracle_status},
-        "nop": {"trial_id": nop_trial, "reward": nop_reward, "exit_status": nop_status},
+        "oracle": {
+            "trial_id": oracle_trial, "reward": oracle_reward, "exit_status": oracle_status,
+            "started_at": oracle_start, "finished_at": oracle_end,
+            "duration_seconds": oracle_secs,
+        },
+        "nop": {
+            "trial_id": nop_trial, "reward": nop_reward, "exit_status": nop_status,
+            "started_at": nop_start, "finished_at": nop_end, "duration_seconds": nop_secs,
+        },
     },
+    "duration_seconds": oracle_secs + nop_secs,
     "artifact_hashes": {"oracle_reward": oracle_reward, "nop_reward": nop_reward},
 }
 open(receipt_path, "w").write(json.dumps(receipt, indent=2) + "\n")

@@ -328,6 +328,40 @@ def deduplicate_packages(text: str, package: str) -> str:
     return "".join(out)
 
 
+def pass_package_options(text: str, package: str) -> str:
+    r"""Hoist a package's options to \PassOptionsToPackage before \documentclass.
+
+    The other shape of "Option clash": the document class (or a package it pulls
+    in) loads the package first with no options, and the preamble's explicit
+    \usepackage[opts]{pkg} then clashes with it. There is no duplicate
+    \usepackage to drop, so deduplication is a no-op -- four papers in the corpus
+    failed here with xcolor loaded once in the source and once by revtex.
+
+    Requesting the options before \documentclass makes them part of that first
+    load, which is the remedy LaTeX itself documents.
+    """
+    pattern = re.compile(r"\\usepackage\s*\[([^\]]*)\]\s*\{([^}]*)\}")
+    options = ""
+    replacements: list[tuple[int, int, str]] = []
+    for match in pattern.finditer(text):
+        names = [n.strip() for n in match.group(2).split(",")]
+        if package not in names:
+            continue
+        options = match.group(1)
+        remaining = [n for n in names if n != package]
+        body = f"\\usepackage{{{','.join(remaining)}}}" if remaining else ""
+        replacements.append((match.start(), match.end(), body))
+    if not options:
+        return text
+    for start, stop, body in reversed(replacements):
+        text = text[:start] + body + text[stop:]
+    directive = f"\\PassOptionsToPackage{{{options}}}{{{package}}}\n"
+    class_match = re.search(r"\\documentclass\s*(\[[^\]]*\])?\s*\{[^}]*\}", text)
+    if not class_match:
+        return directive + text
+    return text[: class_match.start()] + directive + text[class_match.start() :]
+
+
 def clashing_package(log: str) -> str | None:
     match = re.search(r"Option clash for package\s+([A-Za-z0-9@._-]+)", log)
     return match.group(1).rstrip(".") if match else None

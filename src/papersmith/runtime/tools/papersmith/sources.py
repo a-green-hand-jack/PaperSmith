@@ -10,6 +10,7 @@ fail closed.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import http.client
 import io
@@ -42,18 +43,65 @@ HTTP_MAX_RETRY_DELAY_SECONDS = 120.0
 # the source bundle), so without a floor here a single shard bursts well past the
 # limit and earns a 429 for the whole batch.
 ARXIV_MIN_REQUEST_INTERVAL_SECONDS = 3.0
+THROTTLE_FILE = "arxiv.throttle"
+# A single process waiting on the shared gate must not wait forever if a holder
+# dies mid-sleep; flock is released by the kernel on death, so this only bounds
+# pathological queues.
+THROTTLE_MAX_WAIT_SECONDS = 120.0
 _last_arxiv_request = 0.0
 
 
 def _throttle_arxiv(url: str) -> None:
-    """Hold each process to arXiv's requested request rate."""
+    r"""Hold the whole batch, not merely this process, to arXiv's request rate.
+
+    A per-process floor does not bound the aggregate: ten shards each pausing
+    three seconds still issue ten requests per three seconds, which is what
+    earned a day-long 429. The gate is therefore shared -- a single file in the
+    batch's ledger directory, which is already mounted into every shard -- and
+    holds the next permitted instant. A process takes an exclusive flock, sleeps
+    until that instant, claims the next slot, and releases. The kernel drops the
+    lock if a worker dies, so a killed shard cannot wedge the batch.
+
+    Without a shared directory there is nothing to coordinate through, and the
+    per-process floor is all that is available.
+    """
     global _last_arxiv_request
     if "arxiv.org" not in url:
         return
-    elapsed = time.monotonic() - _last_arxiv_request
-    if elapsed < ARXIV_MIN_REQUEST_INTERVAL_SECONDS:
-        time.sleep(ARXIV_MIN_REQUEST_INTERVAL_SECONDS - elapsed)
-    _last_arxiv_request = time.monotonic()
+
+    directory = os.environ.get("PAPERSMITH_LEDGER_DIR")
+    if not directory:
+        elapsed = time.monotonic() - _last_arxiv_request
+        if elapsed < ARXIV_MIN_REQUEST_INTERVAL_SECONDS:
+            time.sleep(ARXIV_MIN_REQUEST_INTERVAL_SECONDS - elapsed)
+        _last_arxiv_request = time.monotonic()
+        return
+
+    path = Path(directory) / THROTTLE_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        time.sleep(ARXIV_MIN_REQUEST_INTERVAL_SECONDS)
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            recorded = float(os.read(fd, 64).decode("ascii", "replace").strip() or 0.0)
+        except (ValueError, OSError):
+            recorded = 0.0
+        now = time.time()
+        # Wall clock, not monotonic: the value is shared between processes, and
+        # every container here shares the host's clock.
+        wait = min(max(recorded - now, 0.0), THROTTLE_MAX_WAIT_SECONDS)
+        if wait > 0:
+            time.sleep(wait)
+        nxt = max(time.time(), recorded) + ARXIV_MIN_REQUEST_INTERVAL_SECONDS
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.truncate(fd, 0)
+        os.write(fd, f"{nxt:.3f}\n".encode("ascii"))
+    finally:
+        os.close(fd)
 CROSSREF_API = "https://api.crossref.org/works"
 PDF_MAX_BYTES = 64 * 1024 * 1024
 SOURCE_MAX_BYTES = 256 * 1024 * 1024
