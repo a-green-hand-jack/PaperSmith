@@ -122,13 +122,21 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
         # by this run or by any sibling worker sharing the batch ledger.
         shared = ledger_dir(getattr(args, "ledger", None))
         seen = set(ledger["completed"]) | set(ledger["rejected"]) | load_excluded(shared)
-        candidates = discover_candidates(
-            profile["arxiv_categories"],
-            spec.count,
-            shard=getattr(args, "shard", None),
-            exclude=seen,
+        # A shard that already met its target needs no candidates. Querying
+        # anyway wastes API budget and, worse, puts a network call on the path of
+        # a run that has nothing left to do.
+        at_target = len(ledger["completed"]) >= spec.count
+        candidates = (
+            []
+            if at_target
+            else discover_candidates(
+                profile["arxiv_categories"],
+                spec.count,
+                shard=getattr(args, "shard", None),
+                exclude=seen,
+            )
         )
-        if not candidates and len(ledger["completed"]) < spec.count:
+        if not candidates and not at_target:
             raise BlockedError("proposal", "arXiv discovery returned no unseen candidates")
         state.append_event(
             "discovery_started", domain=spec.domain, candidates=len(candidates), target=spec.count

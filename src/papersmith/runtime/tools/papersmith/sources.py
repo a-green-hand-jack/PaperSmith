@@ -11,6 +11,7 @@ fail closed.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -29,6 +30,8 @@ ARXIV_API = "http://export.arxiv.org/api/query"
 # arXiv asks for roughly one request every three seconds. A batch with ten
 # parallel workers will be throttled without an explicit pause between pages.
 ARXIV_PAGE_DELAY_SECONDS = 3.0
+# Backoff between transport retries, multiplied by the attempt number.
+HTTP_RETRY_BACKOFF_SECONDS = 2.0
 CROSSREF_API = "https://api.crossref.org/works"
 PDF_MAX_BYTES = 64 * 1024 * 1024
 SOURCE_MAX_BYTES = 256 * 1024 * 1024
@@ -161,16 +164,39 @@ def search_candidates(query: str, size: int = 5) -> list[dict]:
 # Fixed identifier resolution (arXiv / CrossRef)
 # ---------------------------------------------------------------------------
 
-def _http_get(url: str, timeout: int = 30, max_bytes: int = 4 * 1024 * 1024) -> bytes:
+def _http_get(
+    url: str,
+    timeout: int = 30,
+    max_bytes: int = 4 * 1024 * 1024,
+    attempts: int = 3,
+) -> bytes:
+    """Fetch a URL, converting every transport failure into a BlockedError.
+
+    A read timeout arrives as TimeoutError, which is not a URLError, so it used
+    to escape as an unhandled exception and kill the whole worker: one flaky
+    read cost a shard the rest of its batch. Transient failures are retried with
+    backoff first, because rejecting a usable paper over one slow socket wastes
+    a candidate that cost real work to find.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read(max_bytes + 1)
-    except urllib.error.URLError as exc:
-        raise BlockedError("proposal", f"metadata fetch failed: {exc.reason}")
-    if len(data) > max_bytes:
-        raise BlockedError("proposal", "metadata response exceeded size limit")
-    return data
+    last_error = ""
+    for attempt in range(1, max(attempts, 1) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = response.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            # A status code is an answer, not a transport hiccup: do not retry.
+            raise BlockedError("proposal", f"fetch failed with HTTP {exc.code}: {url}") from None
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError) as exc:
+            last_error = getattr(exc, "reason", None) or str(exc) or type(exc).__name__
+            if attempt >= attempts:
+                break
+            time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+            continue
+        if len(data) > max_bytes:
+            raise BlockedError("proposal", "response exceeded size limit")
+        return data
+    raise BlockedError("proposal", f"fetch failed after {attempts} attempt(s): {last_error}")
 
 
 def _parse_arxiv_id(identifier: str) -> str:
