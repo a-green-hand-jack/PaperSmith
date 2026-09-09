@@ -61,10 +61,22 @@ USER_AGENT = "PaperSmith/0.1 (deterministic source tooling)"
 
 
 class BlockedError(RuntimeError):
-    def __init__(self, phase: str, reason: str) -> None:
+    """A candidate could not be carried further.
+
+    `retryable` separates "later" from "no". A transport failure says nothing
+    about the paper, so recording it as a rejection burns a good candidate for
+    the rest of the batch; arXiv serving 404 on its source endpoint while it
+    throttles a caller cost 53 usable papers exactly that way. A genuine 404 for
+    a withdrawn paper is also retryable under this rule, and that is the right
+    trade: re-checking a dead paper costs one request, while discarding a live
+    one costs a task.
+    """
+
+    def __init__(self, phase: str, reason: str, retryable: bool = False) -> None:
         super().__init__(reason)
         self.phase = phase
         self.reason = reason
+        self.retryable = retryable
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +224,9 @@ def _http_get(
             # exception: they explicitly mean "later", and arXiv returns 429 as
             # soon as several shards query it at once.
             if exc.code not in RETRYABLE_STATUS or attempt >= attempts:
-                raise BlockedError("proposal", f"fetch failed with HTTP {exc.code}: {url}") from None
+                raise BlockedError(
+                    "proposal", f"fetch failed with HTTP {exc.code}: {url}", retryable=True
+                ) from None
             last_error = f"HTTP {exc.code}"
             delay = HTTP_RETRY_BACKOFF_SECONDS * attempt
             retry_after = (exc.headers or {}).get("Retry-After") if hasattr(exc, "headers") else None
@@ -230,9 +244,13 @@ def _http_get(
             time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
             continue
         if len(data) > max_bytes:
+            # Not retryable: an oversized bundle is a property of the paper, and
+            # it will be exactly as oversized on the next attempt.
             raise BlockedError("proposal", "response exceeded size limit")
         return data
-    raise BlockedError("proposal", f"fetch failed after {attempts} attempt(s): {last_error}")
+    raise BlockedError(
+        "proposal", f"fetch failed after {attempts} attempt(s): {last_error}", retryable=True
+    )
 
 
 def _parse_arxiv_id(identifier: str) -> str:

@@ -139,11 +139,22 @@ def main() -> int:
 
     if report.get("ledger"):
         print(
-            f"\nbatch yield: {report['used']}/{report['considered']} candidates became tasks"
-            f" ({report['yield']})"
+            f"\nbatch yield (of judged): {report['used']}/{report['judged']}"
+            f" ({report['yield_of_judged']})"
         )
         for reason, hits in report["rejection_reasons"].items():
             print(f"  {hits:>4}  {reason}")
+        if report.get("deferred"):
+            # Reported separately and never folded into the judged yield: these
+            # candidates were lost upstream, so counting them as pipeline
+            # rejections would blame the pipeline for someone else's bad minute.
+            print(
+                f"\n  plus {report['deferred']} candidate(s) deferred, never judged"
+                f" -> yield of all {report['attempted']} attempted:"
+                f" {report['yield_of_attempted']}"
+            )
+            for reason, hits in report["deferred_reasons"].items():
+                print(f"  {hits:>4}  {reason}")
     print("\nGate verdicts are recorded evidence, not a quality score. The only")
     print("acceptance signal is a real Harbor receipt with oracle=1 and nop=0.")
     return 0

@@ -16,7 +16,7 @@ from .backends import DEFAULT_BACKEND, extract_json, run_phase
 from .config import domain_profile
 from .conversion import build_source_manifest, build_task_tree
 from .contract import validate_task_tree
-from .ledger import ledger_dir, load_excluded, record_rejected, record_used
+from .ledger import ledger_dir, load_excluded, record_deferred, record_rejected, record_used
 from .materials import assemble_materials, build_materials_prompt, validate_materials_output
 from .review import run_gate
 from .sources import BlockedError, discover_candidates, fetch_arxiv_source, resolve_identifier
@@ -171,8 +171,14 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
                 record_used(shared, identifier, summary.get("task_dir", ""), spec.domain)
             except BlockedError as exc:
                 errors.append({"paper": identifier, "reason": exc.reason})
-                state.append_event("paper_rejected", paper=identifier, reason=exc.reason)
-                record_rejected(shared, identifier, exc.reason, spec.domain)
+                if getattr(exc, "retryable", False):
+                    # Never judged, so never excluded: a throttled upstream must
+                    # not cost this paper every later run of the batch.
+                    state.append_event("paper_deferred", paper=identifier, reason=exc.reason)
+                    record_deferred(shared, identifier, exc.reason, spec.domain)
+                else:
+                    state.append_event("paper_rejected", paper=identifier, reason=exc.reason)
+                    record_rejected(shared, identifier, exc.reason, spec.domain)
             except Exception as exc:  # noqa: BLE001 - one paper must not end the shard
                 reason = f"unexpected {type(exc).__name__}: {exc}"[:300]
                 errors.append({"paper": identifier, "reason": reason})
@@ -325,8 +331,15 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     # 3b. compile the ground-truth PDF in a copy of the source dir (figures + styles present)
     import shutil as _shutil
 
-    pdf_proof = state.root / "stages" / "conversion" / "pdf-proof"
-    _shutil.copytree(sources_dir, pdf_proof, dirs_exist_ok=True)
+    # One scratch tree per paper, rebuilt from empty. A single shared directory
+    # let paper N inherit paper N-1's main.aux, and a stale aux carrying another
+    # document's \Newlabel entries aborts the compile with "Undefined control
+    # sequence": six of seven tasks in a shard lost their ground-truth PDF to
+    # exactly that, and the first paper passed only because it ran first.
+    pdf_proof = state.root / "stages" / "conversion" / "pdf-proof" / slug
+    if pdf_proof.exists():
+        _shutil.rmtree(pdf_proof)
+    _shutil.copytree(sources_dir, pdf_proof)
     pdf_result = latex.compile_ground_truth_pdf(main_tex_text, references_bib, pdf_proof, "main")
     ground_truth_pdf = pdf_result.get("pdf")
     if ground_truth_pdf is None:

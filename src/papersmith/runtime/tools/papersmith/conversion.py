@@ -62,18 +62,14 @@ def build_task_tree(
     private = solution / "private"
     private.mkdir(parents=True, exist_ok=True)
     (private / "main.tex").write_text(ground_truth_tex, encoding="utf-8")
-    if ground_truth_pdf is None or not ground_truth_pdf.is_file():
-        from .latex import compile_ground_truth_pdf
-
-        references_bib = (materials_dir / "references.bib").read_text(encoding="utf-8")
-        # Build scratch belongs under stages/, never beside the deliverables:
-        # a sibling of the task tree shows up as an extra "task" to anything that
-        # lists tasks/, and the acceptance worker resolves a task directory by
-        # substring, so "<slug>-template-proof" can shadow "<slug>".
-        proof_root = task_dir.parent.parent / "stages" / "conversion" / "ground-truth-proof"
-        proof_dir = proof_root / task_dir.name
-        compiled = compile_ground_truth_pdf(ground_truth_tex, references_bib, proof_dir, "main", texmf_dir)
-        ground_truth_pdf = compiled.get("pdf")
+    # No fallback compile here on purpose. The only caller already compiles the
+    # ground truth inside a copy of the source tree, where the paper's figures
+    # and class files live. Recompiling the same tex in a bare scratch directory
+    # cannot do better and cannot succeed for any paper with a figure: it just
+    # overwrites the real failure ("Undefined control sequence") with a
+    # misleading one ("File `Figure2.pdf' not found"), which is how the stale-aux
+    # defect above stayed hidden. An absent main.pdf is the honest state, and
+    # validation reports it.
     if ground_truth_pdf is not None and ground_truth_pdf.is_file():
         shutil.copy2(ground_truth_pdf, private / "main.pdf")
     config_lines = [f"{key}: {value}" for key, value in config.items()]

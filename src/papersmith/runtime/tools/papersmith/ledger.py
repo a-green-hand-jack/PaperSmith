@@ -15,12 +15,19 @@ from it is simply unseen, and the per-run event log remains the evidence chain.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from pathlib import Path
 
 USED_FILE = "used-papers.jsonl"
 REJECTED_FILE = "rejected-papers.jsonl"
+# A candidate the pipeline never got to judge: the fetch failed in a way that
+# says "later", not "no". These are recorded so the loss is visible, and are
+# deliberately NOT part of the exclusion set — a transient 429, a read timeout,
+# or a source endpoint serving 404 while it throttles us must not cost a good
+# paper its place in the batch. One sweep of arXiv soft-404s burned 53 of them.
+DEFERRED_FILE = "deferred-papers.jsonl"
 LEDGER_ENV = "PAPERSMITH_LEDGER_DIR"
 # Keep a record comfortably inside PIPE_BUF (4096 on Linux) so the append stays
 # atomic; reasons are the only unbounded field.
@@ -37,6 +44,10 @@ def ledger_dir(explicit: str | Path | None = None) -> Path | None:
 
 def _append(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Without a time on each row a cluster of failures cannot be told from a
+    # steady trickle, which is the difference between "these papers are bad" and
+    # "the upstream was degraded for twenty minutes".
+    record.setdefault("recorded_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
     line = json.dumps(record, ensure_ascii=False, sort_keys=True)
     data = line.encode("utf-8")
     if len(data) + 1 > MAX_RECORD_BYTES:
@@ -100,7 +111,12 @@ def _count_papers(path: Path) -> int:
 
 
 def load_excluded(directory: Path | None) -> set[str]:
-    """Every paper any worker in this batch already used or rejected."""
+    """Every paper this batch already used or judged unusable.
+
+    Deferred papers are excluded from this set on purpose: they were never
+    judged, so skipping them forever would turn one bad minute upstream into a
+    permanent loss.
+    """
     if directory is None:
         return set()
     return _read_papers(directory / USED_FILE) | _read_papers(directory / REJECTED_FILE)
@@ -113,9 +129,17 @@ def record_used(directory: Path | None, paper: str, task_dir: str, domain: str) 
 
 
 def record_rejected(directory: Path | None, paper: str, reason: str, domain: str) -> None:
+    """Record a paper this batch judged unusable. Permanent for this batch."""
     if directory is None:
         return
     _append(directory / REJECTED_FILE, {"paper": paper, "reason": reason, "domain": domain})
+
+
+def record_deferred(directory: Path | None, paper: str, reason: str, domain: str) -> None:
+    """Record a candidate lost to a transient failure, still eligible later."""
+    if directory is None:
+        return
+    _append(directory / DEFERRED_FILE, {"paper": paper, "reason": reason, "domain": domain})
 
 
 def yield_report(directory: Path | None) -> dict:
@@ -129,29 +153,44 @@ def yield_report(directory: Path | None) -> dict:
         return {"ledger": None}
     used = directory / USED_FILE
     rejected = directory / REJECTED_FILE
-    buckets: dict[str, int] = {}
-    if rejected.is_file():
-        for line in rejected.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            reason = str(record.get("reason") or "unknown")
-            # Bucket on the reason's leading clause: the detail after the colon
-            # is per-paper, the clause before it is the failure mode.
-            buckets[reason.split(":", 1)[0].strip()[:80]] = (
-                buckets.get(reason.split(":", 1)[0].strip()[:80], 0) + 1
-            )
+    deferred = directory / DEFERRED_FILE
     used_total = _count_papers(used)
     rejected_total = _count_papers(rejected)
-    considered = used_total + rejected_total
+    deferred_total = _count_papers(deferred)
+    judged = used_total + rejected_total
     return {
         "ledger": str(directory),
-        "considered": considered,
         "used": used_total,
         "rejected": rejected_total,
-        "yield": round(used_total / considered, 4) if considered else None,
-        "rejection_reasons": dict(sorted(buckets.items(), key=lambda kv: -kv[1])),
+        "deferred": deferred_total,
+        # Two denominators, because they answer two different questions and
+        # quoting either one alone misleads. "judged" excludes candidates the
+        # pipeline never got to evaluate, so it is the number that moves when the
+        # pipeline itself changes. "attempted" includes them, so it is the number
+        # that says what the batch actually cost.
+        "judged": judged,
+        "attempted": judged + deferred_total,
+        "yield_of_judged": round(used_total / judged, 4) if judged else None,
+        "yield_of_attempted": (
+            round(used_total / (judged + deferred_total), 4) if judged + deferred_total else None
+        ),
+        "rejection_reasons": _bucket_reasons(rejected),
+        "deferred_reasons": _bucket_reasons(deferred),
     }
+
+
+def _bucket_reasons(path: Path) -> dict[str, int]:
+    """Count records by failure mode: the reason's clause before the first colon."""
+    buckets: dict[str, int] = {}
+    if not path.is_file():
+        return buckets
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mode = str(record.get("reason") or "unknown").split(":", 1)[0].strip()[:80]
+        buckets[mode] = buckets.get(mode, 0) + 1
+    return dict(sorted(buckets.items(), key=lambda kv: -kv[1]))
