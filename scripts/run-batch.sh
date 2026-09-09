@@ -29,7 +29,7 @@ Options:
   --shards SPEC     Domain shard plan, e.g. "biology:3 physics:4 computer-science:2 mathematics:1"
                     (N shards for that domain). Default: one shard per known domain.
   --count N         Target tasks per shard (default 5).
-  --run-root DIR    Where per-shard run directories go (default /tmp/papersmith-batch).
+  --dir DIR    Where per-shard run directories go (default /tmp/papersmith-batch).
   --account NAME    accountctl provider account (default: the provider name).
   --accept-jobs N   Concurrent Harbor acceptance workers (default 2).
   --stage STAGE     create | accept | report | all (default all).
@@ -55,7 +55,7 @@ while (($#)); do
   case "$1" in
     --shards) shards_spec="${2:?missing value for --shards}"; shift 2 ;;
     --count) count="${2:?missing value for --count}"; shift 2 ;;
-    --run-root) run_root="${2:?missing value for --run-root}"; shift 2 ;;
+    --dir) run_root="${2:?missing value for --dir}"; shift 2 ;;
     --account) account="${2:?missing value for --account}"; shift 2 ;;
     --accept-jobs) accept_jobs="${2:?missing value for --accept-jobs}"; shift 2 ;;
     --stage) stage="${2:?missing value for --stage}"; shift 2 ;;
@@ -222,5 +222,5 @@ fi
 # --------------------------------------------------------------------------
 if [[ "$stage" == all || "$stage" == report ]]; then
   echo "=== report ==="
-  python3 "$root/scripts/batch-report.py" --run-root "$run_root" --ledger "$ledger_dir"
+  python3 "$root/scripts/batch-report.py" --dir "$run_root" --ledger "$ledger_dir"
 fi

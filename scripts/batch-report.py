@@ -102,7 +102,7 @@ def collect(run_root: Path) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs", type=Path, required=True, help="directory holding per-shard run directories")
+    parser.add_argument("--dir", dest="runs", type=Path, required=True, help="directory holding per-shard run directories")
     parser.add_argument("--ledger", type=Path)
     parser.add_argument("--json", action="store_true", help="emit the rows as JSON")
     args = parser.parse_args()
