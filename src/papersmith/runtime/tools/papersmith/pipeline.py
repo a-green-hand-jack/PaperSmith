@@ -96,6 +96,10 @@ def run_fixed(root: Path, spec, args, resume: bool = False) -> dict:
             except BlockedError as exc:
                 errors.append({"paper": paper, "reason": exc.reason})
                 state.append_event("paper_rejected", paper=paper, reason=exc.reason)
+            except Exception as exc:  # noqa: BLE001 - one paper must not end the run
+                reason = f"unexpected {type(exc).__name__}: {exc}"[:300]
+                errors.append({"paper": paper, "reason": reason})
+                state.append_event("paper_rejected", paper=paper, reason=reason)
 
         ok = bool(task_summaries)
         state.data["status"] = "blocked"
@@ -169,6 +173,11 @@ def run_discovery(root: Path, spec, args, resume: bool = False) -> dict:
                 errors.append({"paper": identifier, "reason": exc.reason})
                 state.append_event("paper_rejected", paper=identifier, reason=exc.reason)
                 record_rejected(shared, identifier, exc.reason, spec.domain)
+            except Exception as exc:  # noqa: BLE001 - one paper must not end the shard
+                reason = f"unexpected {type(exc).__name__}: {exc}"[:300]
+                errors.append({"paper": identifier, "reason": reason})
+                state.append_event("paper_rejected", paper=identifier, reason=reason)
+                record_rejected(shared, identifier, reason, spec.domain)
 
         ok = len(task_summaries) >= spec.count
         state.data["status"] = "blocked"
@@ -211,7 +220,7 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     probe = latex.probe_reducibility(sources_dir, main_tex)
     if not probe["ok"]:
         raise BlockedError("proposal", "not reducible: " + "; ".join(probe["issues"]))
-    main_tex_text = main_tex.read_text(encoding="utf-8")
+    main_tex_text = main_tex.read_text(encoding="utf-8", errors="replace")
     template_tex = latex.derive_template(main_tex_text)
     references_bib = latex.extract_references(sources_dir)
     texmf_dir = state.root / "stages" / "materials" / "texmf"
