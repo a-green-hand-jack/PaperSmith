@@ -194,6 +194,114 @@ def stub_macros(text: str, names: list[str]) -> str:
     return text[:position] + stubs + "\n" + text[position:]
 
 
+GRAPHICS_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg", ".eps", ".ps", ".gif", ".bmp", ".tif", ".tiff")
+
+
+def copy_graphics(source_dir: Path, dest_dir: Path, limit_bytes: int = 64 * 1024 * 1024) -> int:
+    r"""Copy the source's image files next to a template being compiled.
+
+    Preambles and author blocks routinely \includegraphics small assets such as
+    an ORCID badge. Those live in the paper's directory, so a template compiled
+    anywhere else fails on a missing file — which is a packaging problem, not a
+    property of the paper. Names are flattened to their basename because that is
+    how \includegraphics refers to them once \graphicspath is gone.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    budget = limit_bytes
+    for path in sorted(source_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in GRAPHICS_SUFFIXES:
+            continue
+        if path.is_symlink():
+            continue
+        size = path.stat().st_size
+        if size > budget:
+            break
+        target = dest_dir / path.name
+        if target.exists():
+            continue
+        shutil.copy2(path, target)
+        budget -= size
+        copied += 1
+    return copied
+
+
+def deduplicate_packages(text: str, package: str) -> str:
+    r"""Keep only the first \usepackage of `package`, dropping later loads.
+
+    LaTeX raises "Option clash" when the same package is requested twice with
+    different options. Inlining fragments makes that easy to trigger, and the
+    first load is the one whose options the rest of the preamble was written
+    against.
+    """
+    pattern = re.compile(r"\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
+    seen = False
+    out: list[str] = []
+    position = 0
+    for match in pattern.finditer(text):
+        names = [n.strip() for n in match.group(2).split(",")]
+        if package not in names:
+            continue
+        if not seen:
+            seen = True
+            continue
+        # Drop this load: either the whole command, or just this name from a list.
+        out.append(text[position : match.start()])
+        if len(names) > 1:
+            kept = ",".join(n for n in names if n != package)
+            out.append(f"\\usepackage{match.group(1) or ''}{{{kept}}}")
+        position = match.end()
+    out.append(text[position:])
+    return "".join(out)
+
+
+def clashing_package(log: str) -> str | None:
+    match = re.search(r"Option clash for package\s+([A-Za-z0-9@._-]+)", log)
+    return match.group(1).rstrip(".") if match else None
+
+
+def _declares(text: str, name: str) -> bool:
+    r"""Whether `text` actually declares \<name>{...} or \<name>[...]{...}.
+
+    A substring test is wrong here: "\title" also matches \titlerunning and
+    \titleformat, so a paper using either was treated as already having a title,
+    the title was dropped from the template, and \maketitle then failed with
+    "No \title given".
+    """
+    return bool(re.search(rf"\\{name}\s*(?:\[[^\]]*\])?\s*\{{", text))
+
+
+def blank_abstract(text: str) -> str:
+    r"""Empty the abstract while keeping whatever form the source used."""
+    text = re.sub(
+        r"(\\begin\{abstract\}).*?(\\end\{abstract\})",
+        r"\1\n\2",
+        text,
+        flags=re.S,
+    )
+
+    def empty_arg(match: re.Match[str]) -> str:
+        content, end = _balanced_block(text, match.end() - 1)
+        return "\\abstract{}"
+
+    return re.sub(r"\\abstract\s*\{", empty_arg, text, count=1)
+
+
+def _front_matter(body: str) -> str | None:
+    r"""The source's own front matter, verbatim, up to and including \maketitle.
+
+    Reconstructing \title and \author loses the class-specific machinery that
+    travels with them — affiliations, emails, \IEEEauthorblockA, AASTeX
+    collaborations — and the rebuilt block then fails to compile even though the
+    paper's own did. Keeping this span verbatim preserves exactly what already
+    worked; only the abstract is emptied, because writing it is the task.
+    """
+    match = re.search(r"\\maketitle", body)
+    if not match:
+        return None
+    return blank_abstract(body[: match.end()])
+
+
 def derive_template(main_tex_text: str) -> str:
     doc_match = re.search(r"\\begin\{document\}", main_tex_text)
     preamble = main_tex_text[: doc_match.start()] if doc_match else ""
@@ -213,8 +321,8 @@ def derive_template(main_tex_text: str) -> str:
 
     # Keep title/author in the preamble verbatim; for revtex-style papers they
     # live in the body and must be re-emitted before \maketitle.
-    title = "" if "\\title" in preamble else (_extract_command(body, "title") or "")
-    author = "" if "\\author" in preamble else (_extract_command(body, "author") or "")
+    title = "" if _declares(preamble, "title") else (_extract_command(body, "title") or "")
+    author = "" if _declares(preamble, "author") else (_extract_command(body, "author") or "")
 
     # Emit an empty abstract in the same form the source uses.
     if "\\begin{abstract}" in main_tex_text:
@@ -226,13 +334,22 @@ def derive_template(main_tex_text: str) -> str:
 
     lines = [preamble.rstrip()]
     lines.append("\\begin{document}")
-    if title:
-        lines.append("\\title{" + title + "}")
-    if author:
-        lines.append("\\author{" + author + "}")
-    if abstract_block:
-        lines.append(abstract_block)
-    lines.append("\\maketitle")
+    front = _front_matter(body)
+    if front is not None:
+        # Preserve the source's front matter rather than rebuilding it.
+        lines.append(front.strip())
+        if abstract_block and "abstract" not in front:
+            # The source puts its abstract after \maketitle; keep an empty one
+            # so the writing agent has the same slot to fill.
+            lines.append(abstract_block)
+    else:
+        if title:
+            lines.append("\\title{" + title + "}")
+        if author:
+            lines.append("\\author{" + author + "}")
+        if abstract_block:
+            lines.append(abstract_block)
+        lines.append("\\maketitle")
     for level, name in structure:
         lines.append(f"\\{level}{{{name}}}")
     lines.extend(bibliography_block(main_tex_text))
@@ -443,9 +560,15 @@ def compile_ground_truth_pdf(
 
 
 def compile_template(
-    template_text: str, references_text: str, out_dir: Path, texmf_dir: Path | None = None
+    template_text: str,
+    references_text: str,
+    out_dir: Path,
+    texmf_dir: Path | None = None,
+    assets_dir: Path | None = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if assets_dir is not None and assets_dir.is_dir():
+        copy_graphics(assets_dir, out_dir)
     (out_dir / "template.tex").write_text(template_text, encoding="utf-8")
     (out_dir / "references.bib").write_text(references_text, encoding="utf-8")
     env = _tex_env(texmf_dir)

@@ -236,18 +236,35 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     # previous paper's compile log, so the dominant rejection bucket could not
     # be diagnosed after the fact.
     proof_dir = state.root / "stages" / "materials" / "template-proof" / slug
-    template_proof = latex.compile_template(template_tex, references_bib, proof_dir, texmf_dir)
+    # The paper's own images travel with the template: a preamble that includes a
+    # badge or logo must still build away from the source directory.
+    template_proof = latex.compile_template(
+        template_tex, references_bib, proof_dir, texmf_dir, assets_dir=sources_dir
+    )
     repairs: list[str] = []
 
+    def recompile() -> dict:
+        return latex.compile_template(
+            template_tex, references_bib, proof_dir, texmf_dir, assets_dir=sources_dir
+        )
+
     if not template_proof["ok"]:
-        # Escalation 1: declare macros TeX reported as undefined. These are
+        # Escalation 1: the same package loaded twice with different options.
+        # Inlining fragments makes this easy to trigger; the first load wins.
+        clash = latex.clashing_package(template_proof["log"])
+        if clash:
+            template_tex = latex.deduplicate_packages(template_tex, clash)
+            template_proof = recompile()
+            if template_proof["ok"]:
+                repairs.append(f"deduplicated package: {clash}")
+
+    if not template_proof["ok"]:
+        # Escalation 2: declare macros TeX reported as undefined. These are
         # typically defined in source the derivation stripped.
         missing = latex.undefined_macros(template_proof["log"])
         if missing:
             template_tex = latex.stub_macros(template_tex, missing)
-            template_proof = latex.compile_template(
-                template_tex, references_bib, proof_dir, texmf_dir
-            )
+            template_proof = recompile()
             if template_proof["ok"]:
                 repairs.append(f"stubbed undefined macros: {', '.join(missing[:8])}")
 
