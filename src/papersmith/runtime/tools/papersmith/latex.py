@@ -271,37 +271,6 @@ def _declares(text: str, name: str) -> bool:
     return bool(re.search(rf"\\{name}\s*(?:\[[^\]]*\])?\s*\{{", text))
 
 
-def blank_abstract(text: str) -> str:
-    r"""Empty the abstract while keeping whatever form the source used."""
-    text = re.sub(
-        r"(\\begin\{abstract\}).*?(\\end\{abstract\})",
-        r"\1\n\2",
-        text,
-        flags=re.S,
-    )
-
-    def empty_arg(match: re.Match[str]) -> str:
-        content, end = _balanced_block(text, match.end() - 1)
-        return "\\abstract{}"
-
-    return re.sub(r"\\abstract\s*\{", empty_arg, text, count=1)
-
-
-def _front_matter(body: str) -> str | None:
-    r"""The source's own front matter, verbatim, up to and including \maketitle.
-
-    Reconstructing \title and \author loses the class-specific machinery that
-    travels with them — affiliations, emails, \IEEEauthorblockA, AASTeX
-    collaborations — and the rebuilt block then fails to compile even though the
-    paper's own did. Keeping this span verbatim preserves exactly what already
-    worked; only the abstract is emptied, because writing it is the task.
-    """
-    match = re.search(r"\\maketitle", body)
-    if not match:
-        return None
-    return blank_abstract(body[: match.end()])
-
-
 def derive_template(main_tex_text: str) -> str:
     doc_match = re.search(r"\\begin\{document\}", main_tex_text)
     preamble = main_tex_text[: doc_match.start()] if doc_match else ""
@@ -334,22 +303,16 @@ def derive_template(main_tex_text: str) -> str:
 
     lines = [preamble.rstrip()]
     lines.append("\\begin{document}")
-    front = _front_matter(body)
-    if front is not None:
-        # Preserve the source's front matter rather than rebuilding it.
-        lines.append(front.strip())
-        if abstract_block and "abstract" not in front:
-            # The source puts its abstract after \maketitle; keep an empty one
-            # so the writing agent has the same slot to fill.
-            lines.append(abstract_block)
-    else:
-        if title:
-            lines.append("\\title{" + title + "}")
-        if author:
-            lines.append("\\author{" + author + "}")
-        if abstract_block:
-            lines.append(abstract_block)
-        lines.append("\\maketitle")
+    # Preserving the source's front matter verbatim was measured against this
+    # corpus: it recovered nothing and lost two papers to brace imbalance, so the
+    # reconstruction stays.
+    if title:
+        lines.append("\\title{" + title + "}")
+    if author:
+        lines.append("\\author{" + author + "}")
+    if abstract_block:
+        lines.append(abstract_block)
+    lines.append("\\maketitle")
     for level, name in structure:
         lines.append(f"\\{level}{{{name}}}")
     lines.extend(bibliography_block(main_tex_text))
