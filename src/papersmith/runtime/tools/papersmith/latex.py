@@ -274,6 +274,30 @@ def _run_compile(command: list[str], cwd: Path, env: dict) -> tuple[int, str, st
     return result.returncode, result.stdout, result.stderr
 
 
+def summarize_compile_log(log: str, limit: int = 800) -> str:
+    """Pull the actual LaTeX errors out of a compile log.
+
+    The tail of a pdflatex log is package-loading noise, so truncating to the
+    last N characters reliably hides the one thing worth reading. TeX marks
+    real errors with a leading "!", and the line after it usually carries the
+    location, so keep those and fall back to the tail only when there is no
+    error line at all.
+    """
+    lines = log.splitlines()
+    picked: list[str] = []
+    for index, line in enumerate(lines):
+        if line.startswith("!") or line.startswith("! LaTeX Error"):
+            picked.append(line.strip())
+            for follow in lines[index + 1 : index + 3]:
+                if follow.strip():
+                    picked.append(follow.strip())
+            if sum(len(p) for p in picked) > limit:
+                break
+    if not picked:
+        return log[-limit:]
+    return " | ".join(dict.fromkeys(picked))[:limit]
+
+
 def _compile_commands(name: str) -> list[list[str]]:
     return [
         ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape", f"{name}.tex"],

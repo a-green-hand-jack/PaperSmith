@@ -216,11 +216,20 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     references_bib = latex.extract_references(sources_dir)
     texmf_dir = state.root / "stages" / "materials" / "texmf"
     latex.extract_style_files(sources_dir, texmf_dir)
+    # Per-paper proof directory: a shared one let each paper overwrite the
+    # previous paper's compile log, so the dominant rejection bucket could not
+    # be diagnosed after the fact.
     template_proof = latex.compile_template(
-        template_tex, references_bib, state.root / "stages" / "materials" / "template-proof", texmf_dir
+        template_tex,
+        references_bib,
+        state.root / "stages" / "materials" / "template-proof" / slug,
+        texmf_dir,
     )
     if not template_proof["ok"]:
-        raise BlockedError("proposal", "template does not compile: " + template_proof["log"][-800:])
+        raise BlockedError(
+            "proposal",
+            "template does not compile: " + latex.summarize_compile_log(template_proof["log"]),
+        )
     state.append_event("template_derived", paper=identifier, compiles=True)
 
     # 3. materials: model writes overview + captions (read-only session)
