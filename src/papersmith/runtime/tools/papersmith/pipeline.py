@@ -305,13 +305,29 @@ def _build_one(state: RunState, spec, args, paper: str) -> dict:
     output: dict = {}
     validation = {"valid": False, "issues": ["no attempt"]}
     session = {"fingerprint": None}
+    model_failure = ""
     for attempt in range(3):
         session = run_phase(args.backend or DEFAULT_BACKEND, args.provider, args.model, prompt, str(state.root))
+        if session.get("status") != "ok":
+            # A provider that refuses the call says nothing about the paper. This
+            # branch used to fall through to an empty stdout, so a 403 on the
+            # model arrived as "overview invalid after retries" and sent 26 good
+            # candidates to the reject pile under a reason naming the wrong thing.
+            model_failure = (
+                session.get("reason")
+                or f"rc={session.get('returncode')}: {(session.get('stderr') or '').strip()[-300:]}"
+            )
+            state.append_event("model_call_failed", attempt=attempt + 1, detail=model_failure)
+            continue
+        model_failure = ""
         output = extract_json(session.get("stdout") or "") or {}
         validation = validate_materials_output(output)
         if validation["valid"]:
             break
         state.append_event("materials_retry", attempt=attempt + 1, issues=validation["issues"])
+    if model_failure:
+        # Retryable: the paper is still a fine candidate once the provider answers.
+        raise BlockedError("materials", f"model call failed: {model_failure}", retryable=True)
     if not validation["valid"]:
         raise BlockedError("materials", "overview invalid after retries: " + "; ".join(validation["issues"]))
     materials_dir = state.root / "stages" / "materials" / "assembled"
