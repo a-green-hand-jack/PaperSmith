@@ -81,9 +81,17 @@ for task in accepted:
     while tid in taken:
         next_index += 1
         tid = f"{prefix}-{next_index:04d}"
-    source = Path(task["task_dir"])
+    # delivery.json records the path as the writer saw it, and validate runs
+    # inside the container, so task_dir reads /tmp/run/tasks/<id> -- a path that
+    # does not exist on the host. The run directory being published is the
+    # authority on where the tasks actually are; the recorded basename is not.
+    source = Path(run_dir) / "tasks" / Path(task["task_dir"]).name
     if not source.is_dir():
-        raise SystemExit(f"task dir missing: {source}")
+        recorded = Path(task["task_dir"])
+        if recorded.is_dir():
+            source = recorded
+        else:
+            raise SystemExit(f"task dir missing: {source} (recorded as {recorded})")
     destination = stage / tid
     shutil.rmtree(destination, ignore_errors=True)
     shutil.copytree(source, destination)

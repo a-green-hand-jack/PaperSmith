@@ -126,24 +126,45 @@ def cmd_validate(args) -> int:
     if not requests:
         failures.append("no acceptance requests found")
     verified: dict[str, dict] = {}
+    # A task that did not pass its Harbor trials is not a failure of the run, it
+    # is a task the run correctly declines to deliver. Treating it as a run-level
+    # failure meant one bad task blocked every good one in the same batch from
+    # ever being published: 18 rejects held back 12 real acceptances.
+    rejected: list[dict] = []
     for request_path in requests:
         slug = request_path.name[: -len("-request.json")]
         receipt_path = request_path.with_name(f"{slug}-receipt.json")
         if not receipt_path.is_file():
+            # No receipt at all is different: nothing was measured, so the run is
+            # incomplete rather than selective.
             failures.append(f"acceptance receipt missing: {receipt_path.name}")
             continue
         request = json.loads(request_path.read_text(encoding="utf-8"))
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         verification = verify_acceptance_receipt(receipt, request)
         if not verification.get("valid"):
-            failures.append(f"acceptance receipt invalid for {slug}: {verification.get('issues')}")
+            rejected.append({"task_id": slug, "issues": verification.get("issues")})
             continue
         verified[slug] = {"receipt": receipt, "verification": verification}
     if failures:
         _print_json({"valid": False, "run": str(state.root), "failures": failures})
         return 1
+    if not verified:
+        _print_json({
+            "valid": False,
+            "run": str(state.root),
+            "failures": ["no task passed its Harbor trials"],
+            "rejected": rejected,
+        })
+        return 1
     delivery = _assemble_delivery(state, verified)
-    _print_json({"valid": True, "run": str(state.root), "delivery": delivery})
+    _print_json({
+        "valid": True,
+        "run": str(state.root),
+        "delivered": len(verified),
+        "rejected": rejected,
+        "delivery": delivery,
+    })
     return 0
 
 
